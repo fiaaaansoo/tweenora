@@ -1,0 +1,15 @@
+{"op": "advance", "dt": 0.016}
+{"op": "pointer", "kind": "move", "x": 200, "y": 200}
+{"op": "advance", "dt": 0.016}
+{"op": "pointer", "kind": "down", "x": 200, "y": 200}
+{"op": "advance", "dt": 0.016}
+{"op": "advance", "dt": 0.25}
+{"op": "pointer", "kind": "move", "x": 210, "y": 205}
+{"op": "advance", "dt": 0.016}
+{"op": "pointer", "kind": "up", "x": 210, "y": 205}
+{"op": "advance", "dt": 0.016}
+{"op": "advance", "dt": 0.5}
+{"op": "bool", "name": "isDown", "value": true}
+{"op": "advance", "dt": 0.016}
+{"op": "bool", "name": "isDown", "value": false}
+{"op": "advance", "dt": 0.016}

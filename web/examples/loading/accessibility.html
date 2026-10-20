@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Semantics and focus</title>
+</head>
+<body>
+<div class="controls">
+  <button id="enable" type="button">enableSemantics</button>
+  <button id="clear" type="button">clearFocus</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  ex.start(function () {
+    var enabledAtStart = ex.params.get("semantics") === "1";
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      autoplay: true,
+      stateMachine: ex.params.get("stateMachine") || undefined,
+      tabIndex: 0,
+      focusOptions: { allowFocusInterrupt: false },
+      semanticsMode: enabledAtStart ? rive.SemanticMode.Enabled : rive.SemanticMode.Disabled,
+      semanticsOptions: { riveCanvasLabel: "Animation preview" },
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+    twnoCheck.instance = instance;
+    twnoCheck.report = function () {
+      var report = {
+        tabIndex: document.getElementById("canvas").tabIndex,
+        semanticTree: instance.semanticTree ? "present" : null,
+        accessibilityOverlay: instance.accessibilityOverlay ? "present" : null,
+        canvasLabel: document.getElementById("canvas").getAttribute("aria-label"),
+      };
+      document.getElementById("info").textContent = JSON.stringify(report, null, 2);
+      return report;
+    };
+    twnoCheck.enable = function () { instance.enableSemantics(); };
+    twnoCheck.clearFocus = function () { instance.clearFocus(); };
+    document.getElementById("enable").addEventListener("click", twnoCheck.enable);
+    document.getElementById("clear").addEventListener("click", twnoCheck.clearFocus);
+  });
+</script>
+</body>
+</html>

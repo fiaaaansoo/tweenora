@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Loading examples</title>
+</head>
+<body>
+<h1>Loading and playback</h1>
+<p>Prepare the assets with <code>python web/examples/prepare_assets.py</code>; each page accepts a
+<code>.twno</code> or a <code>.riv</code> in <code>?file=</code>.</p>
+<ul>
+  <li><a href="url.html?file=/assets/two_artboards.twno">url.html</a>: loading from a URL (<code>src</code>).</li>
+  <li><a href="zero-size.html?file=/assets/two_artboards.twno">zero-size.html</a>: <code>resizeDrawingSurfaceToCanvas()</code> in the <code>onLoad</code> of a second <code>Rive</code> on a zero-size canvas (<code>&amp;visible=1</code> to make it visible).</li>
+  <li><a href="buffer.html?file=/assets/two_artboards.twno">buffer.html</a>: loading from an <code>ArrayBuffer</code>, directly or through a <code>RiveFile</code> (<code>&amp;host=file</code>).</li>
+  <li><a href="shared-file.html?file=/assets/two_artboards.twno">shared-file.html</a>: a <code>RiveFile</code> shared by two instances, then released.</li>
+  <li><a href="named.html?file=/assets/two_artboards.twno&amp;artboard=One">named.html</a>: named artboard and state machine (<code>&amp;artboard=</code>, <code>&amp;stateMachine=</code>), file contents.</li>
+  <li><a href="layout.html?file=/assets/two_artboards.twno">layout.html</a>: <code>Layout</code>, <code>Fit</code>, <code>Alignment</code> and canvas size at run time.</li>
+  <li><a href="reload.html">reload.html</a>: <code>load()</code> with <code>src</code>, <code>buffer</code> and <code>riveFile</code>.</li>
+  <li><a href="runtime-loader.html">runtime-loader.html</a>: <code>RuntimeLoader</code>, non-SIMD fallback (<code>?wasm=/pkg/absent.wasm</code>) and errors (<code>?file=/assets/absent.twno</code>).</li>
+  <li><a href="self-hosted.html">self-hosted.html</a>: no configuration, no request outside the served domain (P3-4).</li>
+  <li><a href="asset-loader.html?file=/assets/hosted_image_file.twno">asset-loader.html</a>: image hosted outside the file, provided by <code>assetLoader</code>.</li>
+  <li><a href="diagnostics.html?file=/assets/two_artboards.twno&amp;perf=1">diagnostics.html</a>: FPS counter, stopping and resuming rendering, drawing options.</li>
+  <li><a href="accessibility.html?file=/assets/focusable_element.twno&amp;stateMachine=State%20Machine%201">accessibility.html</a>: semantics, keyboard focus.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Layout, Fit and Alignment</title>
+</head>
+<body>
+<div class="controls">
+  <select id="fit" aria-label="Fit"></select>
+  <select id="alignment" aria-label="Alignment"></select>
+  <button id="narrow" type="button">Canvas 160 px wide</button>
+  <button id="wide" type="button">Full-width canvas</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var canvas = document.getElementById("canvas");
+
+  function fill(select, values, current) {
+    Object.keys(values).forEach(function (key) {
+      var option = document.createElement("option");
+      option.value = values[key];
+      option.textContent = key;
+      option.selected = values[key] === current;
+      select.appendChild(option);
+    });
+  }
+
+  ex.start(function () {
+    var fitSelect = document.getElementById("fit");
+    var alignmentSelect = document.getElementById("alignment");
+    fill(fitSelect, rive.Fit, rive.Fit.Contain);
+    fill(alignmentSelect, rive.Alignment, rive.Alignment.Center);
+
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: canvas,
+      autoplay: true,
+      layout: new rive.Layout({ fit: rive.Fit.Contain, alignment: rive.Alignment.Center }),
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "layout contain/center");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    twnoCheck.instance = instance;
+    twnoCheck.setLayout = function (fit, alignment) {
+      instance.layout = instance.layout.copyWith({ fit: fit, alignment: alignment });
+      fitSelect.value = fit;
+      alignmentSelect.value = alignment;
+      return instance.layout.fit + "/" + instance.layout.alignment;
+    };
+    twnoCheck.setCanvasWidth = function (css) {
+      canvas.style.width = css;
+      instance.resizeDrawingSurfaceToCanvas();
+      return canvas.width + "x" + canvas.height;
+    };
+    twnoCheck.setBounds = function (minX, minY, maxX, maxY) {
+      instance.layout = new rive.Layout({
+        fit: instance.layout.fit,
+        alignment: instance.layout.alignment,
+        minX: minX,
+        minY: minY,
+        maxX: maxX,
+        maxY: maxY,
+      });
+      var layout = instance.layout;
+      return [layout.minX, layout.minY, layout.maxX, layout.maxY].join(",");
+    };
+    twnoCheck.layoutDetails = function () {
+      return rive.RuntimeLoader.awaitInstance().then(function (runtime) {
+        var base = rive.Layout.new({ fit: rive.Fit.Cover, alignment: rive.Alignment.TopLeft });
+        var copy = base.copyWith({ fit: rive.Fit.Contain });
+        return {
+          base: base.fit + "/" + base.alignment,
+          copy: copy.fit + "/" + copy.alignment,
+          scaleFactor: copy.layoutScaleFactor,
+          runtimeFit: String(copy.runtimeFit(runtime)),
+          runtimeAlignment: String(copy.runtimeAlignment(runtime)),
+        };
+      });
+    };
+    function apply() { twnoCheck.setLayout(fitSelect.value, alignmentSelect.value); }
+    fitSelect.addEventListener("change", apply);
+    alignmentSelect.addEventListener("change", apply);
+    document.getElementById("narrow").addEventListener("click", function () { twnoCheck.setCanvasWidth("160px"); });
+    document.getElementById("wide").addEventListener("click", function () { twnoCheck.setCanvasWidth("100%"); });
+  });
+</script>
+</body>
+</html>

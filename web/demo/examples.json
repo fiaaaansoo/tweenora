@@ -1,0 +1,105 @@
+[
+  {
+    "id": "ball",
+    "title": "Bouncing ball",
+    "description": "A ball falls, squashes and bounces back up, in a loop.",
+    "file": "/assets/bouncing-ball.twno",
+    "publishable": true
+  },
+  {
+    "id": "square",
+    "title": "Spinning square",
+    "description": "Rotation, pulsing scale and color change.",
+    "file": "/assets/spinning-square.twno",
+    "publishable": true
+  },
+  {
+    "id": "button",
+    "title": "Interactive button",
+    "description": "A boolean input toggles the button, a trigger makes it pulse.",
+    "file": "/assets/button.twno",
+    "stateMachine": "bascule",
+    "publishable": true
+  },
+  {
+    "id": "tinted-shape",
+    "title": "Bound colors",
+    "description": "Two colors driven by view model properties.",
+    "file": "/assets/tinted-shape.twno",
+    "publishable": true
+  },
+  {
+    "id": "two-artboards",
+    "title": "Two artboards",
+    "description": "Pick the artboard, then its animation.",
+    "file": "/assets/two_artboards.twno",
+    "publishable": false
+  },
+  {
+    "id": "state-machines",
+    "title": "Four state machines",
+    "description": "One scene, four behaviors.",
+    "file": "/assets/multiple_state_machines.twno",
+    "stateMachine": "one",
+    "publishable": false
+  },
+  {
+    "id": "toggle",
+    "title": "Boolean toggle",
+    "description": "A boolean input changes the scene state.",
+    "file": "/assets/click_event.twno",
+    "artboard": "art-2",
+    "stateMachine": "sm-1",
+    "publishable": false
+  },
+  {
+    "id": "trigger",
+    "title": "Trigger",
+    "description": "A trigger starts an animation.",
+    "file": "/assets/state_machine_triggers.twno",
+    "publishable": false
+  },
+  {
+    "id": "number",
+    "title": "Number and sound",
+    "description": "A numeric input, and a sound played after a gesture.",
+    "file": "/assets/sound.twno",
+    "publishable": false
+  },
+  {
+    "id": "view-model",
+    "title": "Bound properties",
+    "description": "Text, number, boolean and color from a view model.",
+    "file": "/assets/data_binding_test.twno",
+    "artboard": "artboard-1",
+    "publishable": false
+  },
+  {
+    "id": "enumeration",
+    "title": "Enumeration",
+    "description": "An enumeration bound to transitions.",
+    "file": "/assets/custom_property_enum.twno",
+    "publishable": false
+  },
+  {
+    "id": "script",
+    "title": "Script Luau",
+    "description": "A script draws a polygon: color, then trigger.",
+    "file": "/assets/script_inputs_test_1.twno",
+    "publishable": false
+  },
+  {
+    "id": "text",
+    "title": "Text",
+    "description": "Five fonts and several lines of text.",
+    "file": "/assets/new_text.twno",
+    "publishable": false
+  },
+  {
+    "id": "layout",
+    "title": "Layout responsive",
+    "description": "The artboard follows the size of the area.",
+    "file": "/assets/layout_aspect_ratio.twno",
+    "publishable": false
+  }
+]

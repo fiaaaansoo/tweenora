@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Shared RiveFile</title>
+</head>
+<body>
+<div class="controls">
+  <button id="cleanup" type="button">Release (cleanup)</button>
+</div>
+<div class="row" id="row"></div>
+<pre id="log"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var log = document.getElementById("log");
+  function say(text) { log.textContent += text + "\n"; }
+
+  ex.start(function () {
+    var instances = [];
+    var file = new rive.RiveFile({
+      src: ex.file,
+      onLoad: function () {
+        var row = document.getElementById("row");
+        var loaded = 0;
+        ["a", "b"].forEach(function (id) {
+          var instance = new rive.Rive({
+            riveFile: file,
+            canvas: ex.withCanvas(row, "canvas-" + id),
+            autoplay: true,
+            onLoad: function () {
+              instance.resizeDrawingSurfaceToCanvas();
+              say("instance " + id + " loaded");
+              loaded += 1;
+              if (loaded === 2) {
+                ex.setState("loaded", "two instances on one RiveFile");
+              }
+            },
+            onLoadError: ex.fail,
+            onAdvance: ex.countFrames,
+          });
+          instances.push(instance);
+        });
+      },
+      onLoadError: ex.fail,
+    });
+    var loadSeen = 0;
+    function countLoad() { loadSeen += 1; }
+    file.on(rive.EventType.Load, countLoad);
+    file.on(rive.EventType.Load, countLoad);
+    file.off(rive.EventType.Load, countLoad);
+    twnoCheck.fileLoadEvents = function () { return loadSeen; };
+    file.init();
+    twnoCheck.artboardByName = function (name) { return Boolean(file.getArtboard(name)); };
+    twnoCheck.file = file;
+    twnoCheck.instances = instances;
+    twnoCheck.cleanup = function () {
+      instances.forEach(function (instance) { instance.cleanup(); });
+      file.cleanup();
+      say("cleanup done");
+      ex.setState("cleaned", "released");
+    };
+    document.getElementById("cleanup").addEventListener("click", twnoCheck.cleanup);
+  });
+</script>
+</body>
+</html>

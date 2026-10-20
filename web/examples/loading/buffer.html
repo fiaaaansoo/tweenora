@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Loading from a buffer</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  ex.start(function () {
+    fetch(ex.file)
+      .then(function (response) {
+        if (!response.ok) { throw new Error("HTTP " + response.status + " for " + ex.file); }
+        return response.arrayBuffer();
+      })
+      .then(function (buffer) {
+        twnoCheck.bufferBytes = buffer.byteLength;
+        var instance;
+        function options(source) {
+          return Object.assign({
+            canvas: document.getElementById("canvas"),
+            autoplay: ex.params.get("autoplay") !== "0",
+            onLoad: function () {
+              instance.resizeDrawingSurfaceToCanvas();
+              ex.setState("loaded", "loaded from a " + buffer.byteLength + "-byte buffer");
+            },
+            onLoadError: ex.fail,
+            onAdvance: ex.countFrames,
+          }, source);
+        }
+        if (ex.params.get("host") === "file") {
+          var file = new rive.RiveFile({
+            buffer: buffer,
+            onLoad: function () {
+              instance = rive.Rive.new(options({ riveFile: file }));
+              twnoCheck.instance = instance;
+            },
+            onLoadError: ex.fail,
+          });
+          file.init();
+          twnoCheck.file = file;
+        } else {
+          instance = rive.Rive.new(options({ buffer: buffer }));
+          twnoCheck.instance = instance;
+        }
+      })
+      .catch(ex.fail);
+  });
+</script>
+</body>
+</html>

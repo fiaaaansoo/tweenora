@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Text and layout examples</title>
+</head>
+<body>
+<h1>Text and layout</h1>
+<p>Prepare the assets with <code>python web/examples/prepare_assets.py</code>; each page accepts a
+<code>.twno</code> or a <code>.riv</code> in <code>?file=</code>.</p>
+<ul>
+  <li><a href="text.html?file=/assets/new_text.twno">text.html</a>: text runs (<code>new_text</code>: "Text Run"), text runs nested by path (<code>runtime_nested_text_runs</code>), hosted font (<code>hosted_font_file</code> with <code>&amp;hosted=/assets/OpenSans-Italic.ttf</code>), fallback fonts (<code>fallback_fonts_test</code> with <code>&amp;autobind=1</code>).</li>
+  <li><a href="responsive.html?file=/assets/layout_aspect_ratio.twno">responsive.html</a>: <code>Fit.Layout</code> and three canvas sizes (mobile, tablet, desktop), scale factor, pixel ratio (<code>layout_aspect_ratio</code>, <code>layout_text_match</code>, <code>layoutstest_8-planets-grid</code>, <code>grid_2x2</code> with <code>&amp;stateMachine=Auto%20Generated%20State%20Machine</code>, <code>layout_scroll_vertical</code>).</li>
+</ul>
+</body>
+</html>

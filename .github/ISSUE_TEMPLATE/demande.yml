@@ -1,0 +1,20 @@
+name: Suggest a feature
+description: An idea to improve the runtime, the web player, the demo or the tools.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: besoin
+    attributes:
+      label: The need
+      description: What you are trying to do and what prevents you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposition
+    attributes:
+      label: What you propose
+      description: A possible solution, or only the expected outcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

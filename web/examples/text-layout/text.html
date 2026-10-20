@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Text, fallback fonts and hosted fonts</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var fallbackCalls = [];
+  var assetsSeen = [];
+
+  function loadFont(url) {
+    return ex.fetchBytes(url).then(rive.decodeFont);
+  }
+
+  ex.start(function () {
+    var hostedFont = ex.params.get("hosted");
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || "State Machine 1",
+      autoplay: true,
+      autoBind: ex.params.get("autobind") === "1",
+      enableRiveAssetCDN: false,
+      assetLoader: function (asset) {
+        assetsSeen.push({ name: asset.name, isFont: asset.isFont });
+        if (!asset.isFont || !hostedFont) { return false; }
+        loadFont(hostedFont).then(function (font) {
+          asset.setFont(font);
+          font.unref();
+          twnoCheck.hostedApplied = true;
+        }).catch(ex.fail);
+        return true;
+      },
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    twnoCheck.instance = instance;
+    twnoCheck.assetsSeen = assetsSeen;
+    twnoCheck.fallbackCalls = fallbackCalls;
+    twnoCheck.get = function (name) { return instance.getTextRunValue(name); };
+    twnoCheck.set = function (name, value) {
+      instance.setTextRunValue(name, value);
+      return instance.getTextRunValue(name);
+    };
+    twnoCheck.getAt = function (name, path) { return instance.getTextRunValueAtPath(name, path); };
+    twnoCheck.setAt = function (name, value, path) {
+      instance.setTextRunValueAtPath(name, value, path);
+      return instance.getTextRunValueAtPath(name, path);
+    };
+    twnoCheck.setBound = function (path, value) {
+      var property = instance.viewModelInstance.string(path);
+      property.value = value;
+      return property.value;
+    };
+    twnoCheck.useFallback = function (urls) {
+      twnoCheck.noFallback();
+      return Promise.all(urls.map(loadFont)).then(function (fonts) {
+        rive.RiveFont.setFallbackFontCallback(function (missingGlyph, weight) {
+          fallbackCalls.push([missingGlyph, weight]);
+          return fonts;
+        });
+        twnoCheck.fallbackFonts = fonts;
+        return fonts.length;
+      });
+    };
+    twnoCheck.noFallback = function () {
+      rive.RiveFont.setFallbackFontCallback(null);
+      (twnoCheck.fallbackFonts || []).forEach(function (font) { font.unref(); });
+      twnoCheck.fallbackFonts = [];
+    };
+    twnoCheck.nativeFont = function (url) {
+      return loadFont(url).then(function (font) {
+        var native = Boolean(font.nativeFont);
+        font.unref();
+        return native;
+      });
+    };
+  });
+</script>
+</body>
+</html>

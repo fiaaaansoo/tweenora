@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Scripting examples</title>
+</head>
+<body>
+<h1>Files with scripts (Luau)</h1>
+<p>Prepare the assets with <code>python web/examples/prepare_assets.py</code>; the page accepts a
+<code>.twno</code> or a <code>.riv</code> in <code>?file=</code>. Script inputs are view model properties.</p>
+<ul>
+  <li><a href="scripting.html?file=/assets/script_inputs_test_1.twno">script_inputs_test_1</a>: a script draws a polygon; <code>twnoCheck.set("color","Color",0xffff0000)</code> then <code>twnoCheck.trigger("Trigger")</code>.</li>
+  <li><a href="scripting.html?file=/assets/scripting_linear_animation.twno">scripting_linear_animation</a>: <code>twnoCheck.set("string","mode","rot")</code> then <code>twnoCheck.set("number","time",0.5)</code>.</li>
+  <li><a href="scripting.html?file=/assets/viewmodel_access.twno">viewmodel_access</a>: the script reads the view model and displays its values.</li>
+  <li><a href="scripting.html?file=/assets/audio_script.twno">audio_script</a>: seven triggers (<code>twnoCheck.trigger("play")</code>...), the sound is checked by ear.</li>
+</ul>
+</body>
+</html>

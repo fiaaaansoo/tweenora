@@ -1,0 +1,287 @@
+import * as rc from "../rive_advanced.mjs";
+
+interface Finalizable {
+  unref: () => void;
+}
+
+class FileFinalizer implements Finalizable {
+  private _file: rc.File;
+  // Nothing else reclaims a session on GC, so a RiveFile dropped without
+  // cleanup() would leak it and everything recorded into it.
+  private _session: rc.DeferredSession | null;
+  public selfUnref: boolean = false;
+  constructor(file: rc.File, session: rc.DeferredSession | null = null) {
+    this._file = file;
+    this._session = session;
+  }
+
+  public unref() {
+    if (this._file) {
+      this._file.unref();
+    }
+    // After the file, never before: the file's resources belong to the session.
+    if (this._session) {
+      this._session.delete();
+      this._session = null;
+    }
+  }
+
+  // Disarms the GC path for a file cleanup() already released.
+  public release() {
+    this._file = null;
+    this._session = null;
+  }
+}
+
+class ObjectFinalizer<T extends Finalizable> {
+  private _finalizableObject: T;
+  constructor(finalizableObject: T) {
+    this._finalizableObject = finalizableObject;
+  }
+
+  public unref() {
+    this._finalizableObject.unref();
+  }
+}
+
+
+class AssetWrapper implements rc.FinalizableTarget {
+  public selfUnref: boolean = false;
+  public unref() {}
+}
+
+class ImageWrapper extends AssetWrapper {
+  private _nativeImage: rc.Image;
+
+  constructor(image: rc.Image) {
+    super();
+    this._nativeImage = image;
+  }
+
+  public get nativeImage(): rc.ImageInternal {
+    return this._nativeImage;
+  }
+
+  public unref() {
+    if (this.selfUnref) {
+      this._nativeImage.unref();
+    }
+  }
+}
+
+class AudioWrapper extends AssetWrapper {
+  private _nativeAudio: rc.Audio;
+
+  constructor(audio: rc.Audio) {
+    super();
+    this._nativeAudio = audio;
+  }
+
+  public get nativeAudio(): rc.AudioInternal {
+    return this._nativeAudio;
+  }
+
+  public unref() {
+    if (this.selfUnref) {
+      this._nativeAudio.unref();
+    }
+  }
+}
+
+class FontWrapper extends AssetWrapper {
+  private _nativeFont: rc.Font;
+
+  constructor(font: rc.Font) {
+    super();
+    this._nativeFont = font;
+  }
+
+  public get nativeFont(): rc.FontInternal {
+    return this._nativeFont;
+  }
+
+  public unref() {
+    if (this.selfUnref) {
+      this._nativeFont.unref();
+    }
+  }
+}
+
+export type AssetLoadCallbackWrapper = (
+  asset: rc.FileAssetInternal,
+  bytes: Uint8Array,
+) => Boolean;
+
+class CustomFileAssetLoaderWrapper {
+  assetLoader: rc.CustomFileAssetLoader;
+  _assetLoaderCallback: AssetLoadCallbackWrapper;
+  // Session of the file being imported, null for an immediate file. Assets of
+  // a deferred file have to decode through the factory that imported it.
+  _session: rc.DeferredSession | null;
+
+  constructor(
+    runtime: rc.RiveCanvas,
+    loaderCallback: AssetLoadCallbackWrapper,
+    session: rc.DeferredSession | null = null,
+  ) {
+    this._assetLoaderCallback = loaderCallback;
+    this._session = session;
+    this.assetLoader = new runtime.CustomFileAssetLoader({
+      loadContents: this.loadContents.bind(this),
+    });
+  }
+
+  loadContents(asset: rc.FileAsset, bytes: any) {
+    let assetWrapper: FileAssetWrapper;
+    if (asset.isImage) {
+      assetWrapper = new ImageAssetWrapper(asset, this._session);
+    } else if (asset.isAudio) {
+      assetWrapper = new AudioAssetWrapper(asset, this._session);
+    } else if (asset.isFont) {
+      assetWrapper = new FontAssetWrapper(asset, this._session);
+    } else {
+      return false;
+    }
+    return this._assetLoaderCallback(assetWrapper, bytes);
+  }
+}
+
+/**
+ * Rive class representing a FileAsset with relevant metadata fields to describe
+ * an asset associated wtih the Rive File
+ */
+class FileAssetWrapper {
+  _nativeFileAsset: rc.FileAssetInternal;
+  _session: rc.DeferredSession | null;
+
+  constructor(
+    nativeAsset: rc.FileAssetInternal,
+    session: rc.DeferredSession | null = null,
+  ) {
+    this._nativeFileAsset = nativeAsset;
+    this._session = session;
+  }
+
+  decode(bytes: Uint8Array): void {
+    // The session travels with the asset so a deferred file's assets are
+    // session-typed without the caller needing to know the file's rendering mode.
+    this._nativeFileAsset.decode(bytes, this._session);
+  }
+
+  get name(): string {
+    return this._nativeFileAsset.name;
+  }
+
+  get fileExtension(): string {
+    return this._nativeFileAsset.fileExtension;
+  }
+
+  get uniqueFilename(): string {
+    return this._nativeFileAsset.uniqueFilename;
+  }
+
+  get isAudio(): boolean {
+    return this._nativeFileAsset.isAudio;
+  }
+
+  get isImage(): boolean {
+    return this._nativeFileAsset.isImage;
+  }
+
+  get isFont(): boolean {
+    return this._nativeFileAsset.isFont;
+  }
+
+  get cdnUuid(): string {
+    return this._nativeFileAsset.cdnUuid;
+  }
+
+  get nativeFileAsset() {
+    return this._nativeFileAsset;
+  }
+}
+
+/**
+ * Rive class extending the FileAsset that exposes a `setRenderImage()` API with a
+ * decoded Image (via the `decodeImage()` API) to set a new Image on the Rive FileAsset
+ */
+class ImageAssetWrapper extends FileAssetWrapper {
+  setRenderImage(image: ImageWrapper): void {
+    (this._nativeFileAsset as rc.ImageAssetInternal).setRenderImage(
+      image.nativeImage,
+    );
+  }
+}
+
+/**
+ * Rive class extending the FileAsset that exposes a `setAudioSource()` API with a
+ * decoded Audio (via the `decodeAudio()` API) to set a new Audio on the Rive FileAsset
+ */
+class AudioAssetWrapper extends FileAssetWrapper {
+  setAudioSource(audio: AudioWrapper): void {
+    (this._nativeFileAsset as rc.AudioAssetInternal).setAudioSource(
+      audio.nativeAudio,
+    );
+  }
+}
+
+/**
+ * Rive class extending the FileAsset that exposes a `setFont()` API with a
+ * decoded Font (via the `decodeFont()` API) to set a new Font on the Rive FileAsset
+ */
+class FontAssetWrapper extends FileAssetWrapper {
+  setFont(font: FontWrapper): void {
+    (this._nativeFileAsset as rc.FontAssetInternal).setFont(font.nativeFont);
+  }
+}
+
+declare const FinalizationRegistry: {
+  new (fn: Function): typeof FinalizationRegistry;
+
+  register<T extends rc.FinalizableTarget>(
+    object: T,
+    description: Finalizable,
+  ): void;
+
+  unregister<T>(object: T): void;
+};
+
+class FakeFinalizationRegistry {
+  constructor(_: Function) {}
+  register(object: rc.FinalizableTarget) {
+    object.selfUnref = true;
+  }
+
+  unregister<T>(_: T) {}
+}
+const MyFinalizationRegistry =
+  typeof FinalizationRegistry !== "undefined"
+    ? FinalizationRegistry
+    : FakeFinalizationRegistry;
+
+const finalizationRegistry = new MyFinalizationRegistry((ob: Finalizable) => {
+  ob?.unref();
+});
+
+const createFinalization = <T extends Finalizable>(
+  target: rc.FinalizableTarget,
+  finalizable: T,
+) => {
+  const finalizer = new ObjectFinalizer<T>(finalizable);
+  finalizationRegistry.register(target, finalizer);
+};
+
+export {
+  finalizationRegistry,
+  createFinalization,
+  Finalizable,
+  ImageWrapper,
+  AudioWrapper,
+  FontWrapper,
+  ImageAssetWrapper,
+  AudioAssetWrapper,
+  FontAssetWrapper,
+  CustomFileAssetLoaderWrapper,
+  FileAssetWrapper,
+  FileFinalizer,
+};

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Web state machine parity</title>
+<style>
+html, body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
+main { padding: 16px; }
+</style>
+</head>
+<body>
+<main>
+<p id="status">loading</p>
+</main>
+<script src="pkg/rive.js"></script>
+<script>
+(function () {
+  var statusLine = document.getElementById("status");
+  var runtimePromise = null;
+
+  function say(text) {
+    statusLine.textContent = text;
+    document.title = "Web state machine parity: " + text;
+  }
+
+  function runtime() {
+    if (!runtimePromise) {
+      rive.RuntimeLoader.setWasmUrl("pkg/rive.wasm");
+      rive.RuntimeLoader.setWasmFallbackUrl("pkg/rive_fallback.wasm");
+      runtimePromise = rive.RuntimeLoader.awaitInstance();
+    }
+    return runtimePromise;
+  }
+
+  async function fetchBytes(url) {
+    var response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(url + ": HTTP " + response.status);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  function inputKind(rc, input) {
+    if (input.type === rc.SMIInput.bool) {
+      return "bool";
+    }
+    if (input.type === rc.SMIInput.number) {
+      return "number";
+    }
+    if (input.type === rc.SMIInput.trigger) {
+      return "trigger";
+    }
+    return "other";
+  }
+
+  function describeInputs(rc, machine) {
+    var out = [];
+    for (var i = 0; i < machine.inputCount(); i += 1) {
+      var input = machine.input(i);
+      var kind = inputKind(rc, input);
+      var value = null;
+      if (kind === "bool") {
+        value = input.asBool().value;
+      } else if (kind === "number") {
+        value = input.asNumber().value;
+      }
+      out.push({ name: input.name, kind: kind, value: value });
+    }
+    return out;
+  }
+
+  function describeEvents(machine) {
+    var out = [];
+    for (var i = 0; i < machine.reportedEventCount(); i += 1) {
+      var event = machine.reportedEventAt(i);
+      out.push({ name: event.name, delay: event.delay });
+    }
+    return out;
+  }
+
+  function findInput(machine, name) {
+    for (var i = 0; i < machine.inputCount(); i += 1) {
+      var input = machine.input(i);
+      if (input.name === name) {
+        return input;
+      }
+    }
+    return null;
+  }
+
+  function applyAction(machine, action) {
+    if (action.op === "advance") {
+      machine.advanceAndApply(action.dt);
+    } else if (action.op === "bool" || action.op === "number") {
+      var input = findInput(machine, action.name);
+      if (input) {
+        if (action.op === "bool") {
+          input.asBool().value = action.value;
+        } else {
+          input.asNumber().value = action.value;
+        }
+      }
+    } else if (action.op === "trigger") {
+      var trigger = findInput(machine, action.name);
+      if (trigger) {
+        trigger.asTrigger().fire();
+      }
+    } else if (action.op === "pointer") {
+      if (action.kind === "down") {
+        machine.pointerDown(action.x, action.y, 0);
+      } else if (action.kind === "move") {
+        machine.pointerMove(action.x, action.y, 0);
+      } else {
+        machine.pointerUp(action.x, action.y, 0);
+      }
+    }
+  }
+
+  async function play(record) {
+    var rc = await runtime();
+    var bytes = await fetchBytes("/src/" + record.path);
+    var scriptText = await (await fetch("/sm/" + record.id + ".script.jsonl")).text();
+    var actions = scriptText.split("\n").filter(function (line) { return line.trim() !== ""; }).map(function (line) { return JSON.parse(line); });
+    var file = await rc.load(bytes);
+    var artboard = file.artboardByName(record.artboard);
+    var machine = new rc.StateMachineInstance(artboard.stateMachineByName(record.stateMachine), artboard);
+    var lines = [JSON.stringify({ trace: 1, file: record.path.split("/").pop(), artboard: artboard.name, stateMachine: record.stateMachine })];
+    for (var i = 0; i < actions.length; i += 1) {
+      applyAction(machine, actions[i]);
+      lines.push(JSON.stringify({ step: i, action: actions[i], inputs: describeInputs(rc, machine), events: describeEvents(machine) }));
+    }
+    lines.push(JSON.stringify({ end: true, steps: actions.length }));
+    machine.delete();
+    artboard.delete();
+    file.delete();
+    return lines.join("\n") + "\n";
+  }
+
+  async function run(records) {
+    var traces = {};
+    var errors = {};
+    for (var i = 0; i < records.length; i += 1) {
+      say((i + 1) + "/" + records.length + " " + records[i].id);
+      try {
+        traces[records[i].id] = await play(records[i]);
+      } catch (failure) {
+        errors[records[i].id] = String(failure && failure.message ? failure.message : failure);
+      }
+    }
+    say("done: " + Object.keys(traces).length + " traces, " + Object.keys(errors).length + " errors");
+    return { traces: traces, errors: errors };
+  }
+
+  window.paritySm = { run: run, play: play };
+  say("ready");
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1252 @@
+#!/usr/bin/python
+
+import argparse
+import atexit
+import base64
+import glob
+import http.server
+import json
+import os
+import pathlib
+import platform
+import queue
+import re
+import shlex
+import shutil
+import signal
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import zipfile
+
+HANDSHAKE_TOKEN = 0xfee1600d
+SHUTDOWN_TOKEN = 0xfee1dead
+
+# Metal API validation, gated by metal_validation_env(). Set in our own
+# environment on host, or passed to the launch command on iOS/iossim.
+# These are the vars that Xcode's scheme diagnostics set.
+METAL_VALIDATION_ENV = {
+    "MTL_DEBUG_LAYER": "1",
+    "METAL_DEVICE_WRAPPER_TYPE": "1", # older spelling of MTL_DEBUG_LAYER.
+    "MTL_DEBUG_LAYER_ERROR_MODE": "assert",
+    # Warnings are far too chatty for CI logs.
+    # FIXME: We should address these warnings.
+    "MTL_DEBUG_LAYER_WARNING_MODE": "ignore",
+    # The layer reports through os_log, which only mirrors to stderr when
+    # forced. The harness forwards nothing else.
+    "CFLOG_FORCE_STDERR": "1",
+    "OS_ACTIVITY_DT_MODE": "enable",
+}
+
+# Shader validation re-instruments every pipeline. On device and in the
+# simulator that starves MTLCompilerService, and pipeline creation fails with
+# XPC_ERROR_CONNECTION_INTERRUPTED, so it stays on host.
+METAL_SHADER_VALIDATION_ENV = {
+    "MTL_SHADER_VALIDATION": "1",
+    "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": "1",
+}
+
+# The Metal validation vars for this run, or {} if it doesn't get validation.
+def metal_validation_env():
+    # NOTE: MoltenVK generates Metal validation errors right now, so only turn
+    # these on for our own Metal backends.
+    if "metal" not in args.backend or args.release:
+        return {}
+    env = dict(METAL_VALIDATION_ENV)
+    if args.target == "host":
+        env.update(METAL_SHADER_VALIDATION_ENV)
+    return env
+
+parser = argparse.ArgumentParser(description="Run native gms & goldens, and dump their .pngs")
+parser.add_argument("tools",
+                    type=str,
+                    nargs="+",
+                    choices=["gms", "goldens", "player"],
+                    help="which tool(s) to run")
+parser.add_argument("-B", "--builddir",
+                    type=str,
+                    default=os.getenv("RIVE_BUILDDIR"),
+                    help="output directory from build")
+parser.add_argument("-b", "--backend",
+                    type=str,
+                    default=None)
+parser.add_argument("-s", "--src",
+                    type=str,
+                    default=os.path.join("..", "..", "..", "zzzgold", "rivs"),
+                    help="INPUT directory of .twno or .riv files to render")
+parser.add_argument("-o", "--outdir",
+                    type=str,
+                    default=os.path.join(".gold", "candidates"),
+                    help="base directory to output the PNG directory structure")
+parser.add_argument("-p", "--png_threads",
+                    type=int,
+                    default=4,
+                    help="Number of pngs encoding threads on each tool process.")
+parser.add_argument("-j", "--jobs-per-tool",
+                    type=int,
+                    default=4,
+                    help="number of processes to spawn for each tool in 'args.tools' "\
+                         "(non-mobile only; android/ios only get one job)")
+parser.add_argument("--rows",
+                    type=int,
+                    default=1,
+                    help="number of rows in the goldens grid")
+parser.add_argument("--cols",
+                    type=int,
+                    default=1,
+                    help="number of columns in the goldens grid")
+parser.add_argument("--deferred",
+                    action='store_true',
+                    help="record through a deferred session and replay it; for "\
+                         "goldens the output must match immediate mode, and "\
+                         "the player needs this for artboard cache-as-bitmap "\
+                         "(needs a --with_rive_canvas build)")
+parser.add_argument("-m", "--match",
+                    type=str,
+                    default=None,
+                    help="`match` patter for gms")
+parser.add_argument("-t", "--target",
+                    default="host",
+                    choices=["host", "android", "ios", "iossim", "unreal",
+                             "unreal_android", "unreal_ios", "webbrowser", "webserver",
+                             "webbrowserandroid", "webserverandroid", 'console'],
+                    help="which platform to run on")
+parser.add_argument("-a", "--android-arch",
+                    default="arm64",
+                    choices=["arm", "arm64"])
+parser.add_argument("-u", "--ios_udid",
+                    type=str,
+                    default=None,
+                    help="unique id of iOS device to run on (--target=ios or iossim)")
+parser.add_argument("-c", "--webclient",
+                    default=os.getenv("RIVE_WEBCLIENT"),
+                    help="executable to launch when --target=webserver")
+parser.add_argument("-k", "--options",
+                    type=str,
+                    default=None,
+                    help="additional options to pass through (player only)")
+parser.add_argument("-w", "--window",
+                    action='store_true',
+                    help="draw to a visible window instead of offscreen (player only)")
+parser.add_argument("-S", "--server_only",
+                    action='store_true',
+                    help="Start servers but don't launch gms or goldens tools")
+parser.add_argument("--remote",
+                    action='store_true',
+                    help="target is remote; serve from host IP instead of localhost")
+parser.add_argument("-r", "--release",
+                    action='store_true',
+                    help="use release build")
+parser.add_argument("--build-only", action='store_true',
+                    help="only build, don't deploy")
+parser.add_argument("-i", "--install-only", action='store_true',
+                    help="only build & install, don't deploy")
+parser.add_argument("--no-rebuild", action='store_true',
+                    help="don't rebuild any native code: the tools in builddir, and "
+                         "(on unreal targets) the rive libraries the plugin links "
+                         "against, which are otherwise built during packaging")
+parser.add_argument("-n", "--no-install", action='store_true',
+                    help="don't package & reinstall the app prior to launch")
+parser.add_argument("-v", "--verbose", action='store_true', help="enable verbose output")
+parser.add_argument("--sync-validation", action='store_true',
+                    help="run with Vulkan synchronization validation")
+parser.add_argument("--unreal-engine", type=str,
+                    default=os.getenv("RIVE_UNREAL_ENGINE"),
+                    help="Unreal Engine root directory. With an unreal target, "
+                         "builds & packages rive_unreal into --builddir via "
+                         "package_project.py instead of assuming a prebuilt "
+                         "package. Env: RIVE_UNREAL_ENGINE.")
+
+args = parser.parse_args()
+skipped_golden_tests = set()
+target_info = {} # dictionary for info about the target (ios_version, etc.)
+rivsqueue = queue.Queue()
+
+# Global pump on stdin.
+input_lock = None
+input_received_cond = None
+input_chars = bytearray()
+input_cancelled = False
+def pump_input_thread():
+    global input_chars
+    while not input_cancelled:
+        try:
+            chars = sys.stdin.readline().encode("ascii")
+            with input_lock:
+                input_chars += chars
+                input_received_cond.notify()
+        except EOFError:
+            return
+
+def get_input():
+    global input_lock, input_received_cond, input_chars
+    if not input_lock:
+        input_lock = threading.Lock()
+        input_received_cond = threading.Condition(input_lock)
+        threading.Thread(target=pump_input_thread, daemon=True).start()
+    with input_lock:
+        while not input_cancelled and len(input_chars) < 1:
+            input_received_cond.wait()
+        chars = input_chars
+        input_chars = bytearray()
+    return chars
+
+def cancel_input():
+    global input_cancelled
+    with input_lock:
+        input_cancelled = True
+        input_received_cond.notify_all()
+
+class text_colors:
+    ERROR = '\033[91m'
+    ENDCOL = '\033[0m'
+
+# Launch a process in a separate thread and crash if it fails.
+class CheckProcess(threading.Thread):
+    def __init__(self, cmd, env=None):
+        threading.Thread.__init__(self)
+        self.cmd = cmd
+        if args.server_only:
+            self.cmd = ["echo", "\n    <command> "] + ['"%s"' % arg for arg in self.cmd]
+        if args.verbose:
+            print(' '.join(self.cmd), flush=True)
+        if shutil.which(self.cmd[0]) is None:
+            print(f'{text_colors.ERROR}' + self.cmd[0] + ' does not exist!' + f'{text_colors.ENDCOL}')
+        else:
+            self.proc = subprocess.Popen(self.cmd, env=env)
+        self._did_terminate = False
+
+    def run(self):
+        self.proc.wait()
+        if not self._did_terminate and self.proc.returncode != 0:
+            os._exit(self.proc.returncode)
+
+    def terminate(self):
+        self._did_terminate = True
+        self.proc.terminate()
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(0)
+    try:
+        # doesn't even have to be reachable
+        s.connect(("10.254.254.254", 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+# Simple http server for web-based targets.
+def start_http_server(directory, server_ip):
+    import functools
+    import http.server
+
+    http_port_holder = []
+    http_port_ready_event = threading.Event()
+
+    class COOPHandler(http.server.SimpleHTTPRequestHandler):
+        def end_headers(self):
+            # Serve cross-origin isolated pages so SharedArrayBuffer is defined
+            # for emscripten POSIX emulation.
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+            self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+            super().end_headers()
+
+        def log_message(self, format, *args):
+            # Suppress default HTTP logs like:
+            # 127.0.0.1 - - [22/Aug/2025 13:37:00] "GET /index.html HTTP/1.1" 200 -
+            pass
+
+    handler = functools.partial(COOPHandler, directory=directory)
+
+    def run_http_server():
+        with socketserver.TCPServer((server_ip, 0), handler) as httpd:
+            http_port_holder.append(httpd.server_address[1])
+            http_port_ready_event.set()
+            httpd.serve_forever()
+
+    thread = threading.Thread(target=run_http_server, daemon=True)
+    thread.start()
+
+    http_port_ready_event.wait()  # wait until server is ready
+    return (server_ip, http_port_holder[0])
+
+# Simple websocket <-> TCP bridge for web-based targets.
+def start_websocket_bridge(tcp_server_address):
+    import asyncio
+    import threading
+    import socket
+    import websockets
+
+    websocket_port_holder = []
+    port_ready_event = threading.Event()
+
+    async def handle_websocket(websocket):
+        reader, writer = await asyncio.open_connection(*tcp_server_address)
+
+        async def tcp_to_ws():
+            try:
+                while True:
+                    data = await reader.read(1024)
+                    if not data:
+                        break
+                    await websocket.send(data)
+            except:
+                raise
+
+        async def ws_to_tcp():
+            try:
+                async for message in websocket:
+                    if isinstance(message, str):
+                        # Text sent to our websocket is always base64.
+                        message = base64.b64decode(message)
+                    writer.write(message)
+                    await writer.drain()
+            except:
+                raise
+
+        await asyncio.gather(tcp_to_ws(), ws_to_tcp())
+        writer.close()
+        await writer.wait_closed()
+
+    async def run_server(sock):
+        async with websockets.serve(handle_websocket, sock=sock):
+            await asyncio.Future()  # run forever
+
+    def server_thread():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('0.0.0.0', 0))  # OS assigns port
+        sock.listen(5)
+        sock.setblocking(False)
+
+        websocket_port_holder.append(sock.getsockname()[1])
+        port_ready_event.set()
+
+        asyncio.run(run_server(sock))
+
+    thread = threading.Thread(target=server_thread, daemon=True)
+    thread.start()
+
+    port_ready_event.wait()
+    return (tcp_server_address[0], websocket_port_holder[0])
+
+# Simple TCP server for Rive tools.
+class ToolServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+
+    def __init__(self, handler):
+        if args.remote:
+            # The device needs to connect over the network instead of localhost.
+            self.host = get_local_ip()
+        else:
+            self.host = "localhost" # Desktop and Android (with "adb reverse") can use local ports.
+        address = (self.host, 0) # let the kernel give us a port
+        self.shutdown_event = None
+        self.claimed_gm_tests_lock = threading.Lock()
+        # "Claim" the skipped tests upfront so they don't get drawn.
+        self.claimed_gm_tests = set(skipped_golden_tests)
+        super().__init__(address, handler)
+
+    def server_activate(self):
+        # Allow enough connections for each process we spawn.
+        num_processes = len(args.tools) * args.jobs_per_tool
+        # Each process establishes a maximum of:
+        #   * 1 primary TestHarness server connection.
+        #   * `png_threads` encoder connections.
+        #   * 1 stdio-forwarding connection.
+        #   * 1 input pump connection.
+        threads_per_process = 1 + args.png_threads + 1 + 1
+        self.socket.listen(num_processes * threads_per_process)
+
+    def serve_forever_async(self):
+        self.serve_thread = threading.Thread(target=self.serve_forever, daemon=True)
+        self.serve_thread.start()
+        print("TestHarness server running on %s:%u" % self.server_address, flush=True)
+
+        if args.target.startswith("web"):
+            self.server_address = start_websocket_bridge(self.server_address)
+            print("TestHarness server bridged to WebSocket on %s:%u" % self.server_address,
+                  flush=True)
+
+            self.http_address = start_http_server(args.builddir,
+                                                  self.server_address[0])
+            print("HTTP server running from %s on %s:%u" % (args.builddir,
+                                                            *self.http_address),
+                  flush=True)
+
+        if self.host == "localhost" and "android" in args.target:
+            # Use ADB reverse port forwarding to make the TestHarness server
+            # accessible from the device.
+            server_port = self.server_address[1]
+            subprocess.Popen(["adb", "reverse",
+                              "tcp:%s" % server_port,
+                              "tcp:%s" % server_port],
+                             stdout=subprocess.DEVNULL)
+            print("ADB reverse port forwarding established on port %u for TestHarness server" % server_port,
+                  flush=True)
+
+            if args.target.startswith("web"):
+                # Use ADB reverse port forwarding to make the HTTP server
+                # accessible from the device.
+                http_port = self.http_address[1]
+                subprocess.Popen(["adb", "reverse",
+                                  "tcp:%s" % http_port,
+                                  "tcp:%s" % http_port],
+                                 stdout=subprocess.DEVNULL)
+                print("ADB reverse port forwarding established on port %u for HTTP server" % http_port,
+                      flush=True)
+
+
+    # Simple utility to wait until a TCP client tells the server it has finished.
+    def wait_for_shutdown_event(self, timeout=threading.TIMEOUT_MAX):
+        if not self.shutdown_event:
+            return True
+        if timeout == threading.TIMEOUT_MAX:
+            while not self.shutdown_event.wait(timeout=1):
+                # Poll every second or Python doesn't receive ^C on windows.
+                pass
+        elif not self.shutdown_event.wait(timeout=timeout):
+            return False
+        self.shutdown_event = None
+        return True
+
+    def reset_shutdown_event(self):
+        self.shutdown_event = threading.Event()
+
+    def synthesize_shutdown_event(self):
+        if self.shutdown_event:
+            self.shutdown_event.set()
+
+    # Only returns True the on the first request for a given name.
+    # Prevents gms from running more than once in a multi-process execution.
+    def claim_gm_test(self, name):
+        with self.claimed_gm_tests_lock:
+            if not name in self.claimed_gm_tests:
+                self.claimed_gm_tests.add(name)
+                return True
+        return False
+
+
+# RequestHandler with services for Rive tools.
+class TestHarnessRequestHandler(socketserver.BaseRequestHandler):
+    REQUEST_TYPE_IMAGE_UPLOAD = 0
+    REQUEST_TYPE_CLAIM_GM_TEST = 1
+    REQUEST_TYPE_FETCH_RIV_FILE = 2
+    REQUEST_TYPE_GET_INPUT = 3
+    REQUEST_TYPE_CANCEL_INPUT = 4
+    REQUEST_TYPE_PRINT_MESSAGE = 5
+    REQUEST_TYPE_DISCONNECT = 6
+    REQUEST_TYPE_APPLICATION_CRASH = 7
+
+    def recvall(self, byte_count):
+        data = bytearray()
+        while len(data) < byte_count:
+            chunk = self.request.recv(min(byte_count - len(data), 4096))
+            data.extend(chunk)
+        return data
+
+    def recv_string(self):
+        length = int.from_bytes(self.recvall(4), byteorder="big")
+        return self.recvall(length).decode("ascii")
+
+    def handle(self):
+        try:
+            while True:
+                # Receive the next request.
+                requesttype = int.from_bytes(self.recvall(4), byteorder="big")
+                if requesttype == self.REQUEST_TYPE_DISCONNECT:
+                    shutdown = int.from_bytes(self.recvall(4), byteorder="big")
+                    if self.server and shutdown:
+                        if self.server.shutdown_event:
+                            self.server.shutdown_event.set()
+                    break
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_IMAGE_UPLOAD:
+                    destination = os.path.join(args.outdir, self.recv_string())
+
+                    with open(destination, "wb") as pngfile:
+                        while True:
+                            chunksize = int.from_bytes(self.recvall(4), byteorder="big")
+                            if chunksize == HANDSHAKE_TOKEN:
+                                break
+                            pngfile.write(self.recvall(chunksize))
+
+                    self.request.sendall(HANDSHAKE_TOKEN.to_bytes(4, byteorder="big"))
+
+                    if args.verbose:
+                        print("[server] Received %s" % destination, flush=True)
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_CLAIM_GM_TEST:
+                    shouldrun = self.server.claim_gm_test(self.recv_string())
+                    self.request.sendall(shouldrun.to_bytes(4, byteorder="big"))
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_FETCH_RIV_FILE:
+                    remaining = rivsqueue.qsize()
+                    if not args.verbose and remaining % 7 == 0:
+                        print("[%3u] rivs remaining...\r" % remaining,
+                              end='\r' if not args.verbose else '', flush=True)
+
+                    try:
+                        while True:
+                            riv = rivsqueue.get_nowait()
+                            riv_basename = os.path.basename(riv)
+                            if not riv_basename in skipped_golden_tests:
+                                break
+                        if args.verbose:
+                            print("[server] Sending %s..." % riv, end='\r', flush=True)
+                        filename_ascii = riv_basename.encode("ascii")
+                        self.request.sendall(len(filename_ascii).to_bytes(4, byteorder="big"))
+                        self.request.sendall(filename_ascii)
+                        with open(riv, "rb") as rivfile:
+                            rivbytes = rivfile.read()
+                            self.request.sendall(len(rivbytes).to_bytes(4, byteorder="big"))
+                            self.request.sendall(rivbytes)
+
+                    except queue.Empty:
+                        # .rivs are finished. Tell the client to shutdown.
+                        self.request.sendall(SHUTDOWN_TOKEN.to_bytes(4, byteorder="big"))
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_GET_INPUT:
+                    chars = get_input()
+                    if input_cancelled:
+                        if args.verbose:
+                            print("[server] shutting down input pump", flush=True)
+                        self.request.sendall(SHUTDOWN_TOKEN.to_bytes(4, byteorder="big"))
+                    else:
+                        if args.verbose:
+                            print("[server] sending ", chars, flush=True)
+                        self.request.sendall(len(chars).to_bytes(4, byteorder="big"))
+                        self.request.sendall(chars)
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_CANCEL_INPUT:
+                    cancel_input()
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_PRINT_MESSAGE:
+                    print(self.recv_string(), end="", flush=True)
+
+                elif requesttype == TestHarnessRequestHandler.REQUEST_TYPE_APPLICATION_CRASH:
+                    print("CRASH in tool: %s" % self.recv_string(), flush=True)
+                    os._exit(-1)
+
+        except ConnectionResetError:
+            print("TestHarness connection reset by client tool", flush=True)
+            os._exit(-1)
+
+
+# If we aren't deploying to the host, update the given command to deploy on its intended target.
+def update_cmd_to_deploy_on_target(cmd, test_harness_server, env):
+    dirname = os.path.dirname(cmd[0])
+    toolname = os.path.basename(cmd[0])
+
+    if args.target == "unreal":
+        unreal_exe_path = os.path.join(dirname, *UNREAL_HOST_PACKAGE)
+        return [unreal_exe_path] + unreal_tool_args(toolname) + \
+               unreal_engine_args(args.target, args.backend) + \
+               unreal_resolution_args(toolname) + unreal_offscreen_args(toolname) + \
+               cmd[1:]
+
+    if args.target == "unreal_ios":
+        print("\nDeploying %s on unreal ios (udid=%s, ios_version=%i)..." %
+              (toolname, args.ios_udid, target_info["ios_version"]))
+        return ["xcrun", "devicectl", "device", "process", "launch", "--console",
+                "--device", args.ios_udid, unreal_ios_bundle_id(), "--"] + \
+               unreal_tool_args(toolname) + \
+               unreal_engine_args(args.target, args.backend) + \
+               unreal_offscreen_args(toolname) + cmd[1:]
+
+    if args.target == "unreal_android":
+        tool_args = ' '.join(unreal_tool_args(toolname) +
+                             unreal_engine_args(args.target, args.backend) + cmd[1:])
+        return ["adb", "shell",
+                    "am force-stop app.rive.rive_unreal && "
+                    f"am start -n app.rive.rive_unreal/com.epicgames.unreal.GameActivity -e cmdline '{tool_args}'"]
+
+    if args.target == "android":
+        sharedlib = os.path.join(dirname, "lib%s.so" % toolname)
+        print("\nDeploying %s on android..." % sharedlib)
+        tool_args = ' '.join(cmd[1:])
+        return ["adb", "shell",
+                "am force-stop app.rive.android_tests && "
+                "am start -n app.rive.android_tests/.%s -e args '%s'" % (toolname, tool_args)]
+
+    elif args.target == "ios":
+        print("\nDeploying %s on ios (udid=%s, ios_version=%i)..." %
+              (toolname, args.ios_udid, target_info["ios_version"]))
+        cmd = [toolname] + cmd[1:]
+        validation_env = metal_validation_env()
+        if target_info["ios_version"] >= 17:
+            # ios-deploy is no longer supported after iOS 17.
+            return ["xcrun", "devicectl", "device", "process", "launch",
+                    # "--console",  # TODO: "--console" not currently supported.
+                    "--device", args.ios_udid] + \
+                   (["--environment-variables", json.dumps(validation_env)]
+                    if validation_env else []) + \
+                   ["rive.app.golden-test-app"] + cmd
+        else:
+            return ["ios-deploy", "--noinstall", "--noninteractive", "--bundle",
+                    "ios_tests/build/Debug-iphoneos/rive_ios_tests.app"] + \
+                   (["--envs", ','.join("%s=%s" % kv
+                                        for kv in validation_env.items())]
+                    if validation_env else []) + \
+                   ["--args", ' '.join(cmd)]
+
+    elif args.target == "iossim":
+        print("\nDeploying %s on ios simulator (udid=%s)..." % (toolname, args.ios_udid))
+        # host-side env already carries the raw vars; simctl also forwards
+        # SIMCTL_CHILD_-prefixed ones to the simulator process.
+        for key, value in metal_validation_env().items():
+            env["SIMCTL_CHILD_" + key] = value
+        cmd = [toolname] + cmd[1:]
+        return ["xcrun", "simctl", "launch", args.ios_udid, "rive.app.golden-test-app"] + cmd
+
+    elif args.target.startswith("web"):
+        env["RIVE_HTTP_SERVER_DIR"] = str(pathlib.Path(args.builddir).resolve())
+        if args.target == "webbrowser":
+            client = ["python3", "-m", "webbrowser", "-t"]
+        elif args.target == "webbrowserandroid":
+            client = ["adb", "shell", "am", "start", "-a",
+                      "android.intent.action.VIEW", "-d"]
+        elif args.webclient:
+            client = shlex.split(args.webclient)
+        else:
+            client = ["echo", "\nPlease navigate your web client to:\n\n"]
+        return client + ["http://%s:%u/%s.html#%s" % (*test_harness_server.http_address,
+                                                      toolname,
+                                                      '%20'.join(cmd[1:]))]
+    else:
+        assert(args.target == "host")
+        return cmd
+
+def launch_gms(test_harness_server):
+    tool = os.path.join(args.builddir, "gms")
+    if platform.system() == "Windows" and args.target  == 'host':
+        tool = tool + ".exe"
+    env = os.environ.copy()
+    cmd = [tool,
+           "--backend", args.backend,
+           "--test_harness", "%s:%u" % test_harness_server.server_address]
+    if not args.target.startswith("web"):
+        cmd = cmd + ["--headless",
+                     "-p%i" % args.png_threads]
+    if args.match:
+        cmd = cmd + ["--match", args.match]
+    if args.verbose:
+        cmd = cmd + ["--verbose"]
+    if args.sync_validation:
+        cmd = cmd + ["--sync-validation"]
+    cmd = update_cmd_to_deploy_on_target(cmd, test_harness_server, env)
+
+    procs = [CheckProcess(cmd, env) for i in range(0, args.jobs_per_tool)]
+    for proc in procs:
+        proc.start()
+
+    return procs
+
+
+def launch_goldens(test_harness_server):
+    tool = os.path.join(args.builddir, "goldens")
+    if platform.system() == "Windows" and args.target  == 'host':
+        tool = tool + ".exe"
+    env = os.environ.copy()
+    if args.verbose:
+        print("[server] Using '" + tool + "'", flush=True)
+
+    if not os.path.exists(args.src):
+        print("Can't find rivspath " + args.src, flush=True)
+        return -1
+
+    if os.path.isdir(args.src):
+        for riv in glob.iglob(os.path.join(args.src, "*.riv")):
+            rivsqueue.put(riv)
+    else:
+        rivsqueue.put(args.src)
+
+    cmd = [tool,
+           "--test_harness", "%s:%u" % test_harness_server.server_address,
+           "--backend", args.backend,
+           "--rows", str(args.rows),
+           "--cols", str(args.cols)]
+    if not args.target.startswith("web"):
+        cmd = cmd + ["--headless",
+                     "-p%i" % args.png_threads]
+    if args.verbose:
+        cmd = cmd + ["--verbose"]
+    if args.deferred:
+        cmd = cmd + ["--deferred"]
+    cmd = update_cmd_to_deploy_on_target(cmd, test_harness_server, env)
+
+    procs = [CheckProcess(cmd, env) for i in range(0, args.jobs_per_tool)]
+    for proc in procs:
+        proc.start()
+
+    return procs
+
+def launch_player(test_harness_server):
+    if not os.path.exists(args.src):
+        print("Can't find riv path " + args.src, flush=True)
+        return -1
+
+    tool = os.path.join(args.builddir, "player")
+    if platform.system() == "Windows" and args.target  == 'host':
+        tool = tool + ".exe"
+    env = os.environ.copy()
+    cmd = [tool,
+           "--test_harness", "%s:%u" % test_harness_server.server_address,
+           "--backend", args.backend]
+    if args.options:
+        cmd += ["--options", args.options]
+    if args.window:
+        cmd += ["--window"]
+    if args.deferred:
+        cmd += ["--deferred"]
+    cmd = update_cmd_to_deploy_on_target(cmd, test_harness_server, env)
+
+    if os.path.isdir(args.src):
+        for riv in glob.iglob(os.path.join(args.src, "*.riv")):
+            rivsqueue.put(riv)
+    else:
+        rivsqueue.put(args.src)
+    player = CheckProcess(cmd, env)
+    player.start()
+    return player
+
+def force_stop_android_tests_apk():
+    subprocess.check_call(["adb", "shell", "am force-stop app.rive.android_tests"])
+
+if platform.system() == "Darwin":
+    UNREAL_HOST_PLATFORM = "Mac"
+    # UAT archives the Mac build as a .app bundle; launch its inner binary.
+    UNREAL_HOST_PACKAGE = ("Mac", "rive_unreal.app", "Contents", "MacOS", "rive_unreal")
+elif platform.system() == "Linux":
+    UNREAL_HOST_PLATFORM = "Linux"
+    UNREAL_HOST_PACKAGE = ("Linux", "rive_unreal.sh")
+else:
+    UNREAL_HOST_PLATFORM = "Windows"
+    UNREAL_HOST_PACKAGE = ("Windows", "rive_unreal.exe")
+
+UNREAL_TARGET_PLATFORMS = {
+    "unreal": UNREAL_HOST_PLATFORM,
+    "unreal_android": "Android",
+    "unreal_ios": "iOS",
+}
+
+# One map serves every tool: which tool runs is chosen by "-rivetool=<name>",
+# and the map itself holds nothing but a PlayerStart (UGMToolSubsystem puts the
+# tool's widget on screen).
+UNREAL_TOOLS_MAP = "/Game/maps/tools"
+
+def unreal_tool_args(toolname):
+    return [UNREAL_TOOLS_MAP, "-rivetool=" + toolname]
+
+def unreal_offscreen_args(toolname):
+    # The harness tools dump pngs and never need to be seen; the player is
+    # something you watch, so it keeps its window.
+    return [] if toolname == "player" else ["-RenderOffScreen"]
+
+def unreal_resolution_args(toolname):
+    return [] if toolname == "player" else ["-ResX=1280", "-ResY=720"]
+
+UNREAL_RHI_SWITCHES = {
+    "d3d": "-dx11",
+    "d3d12": "-dx12",
+    "vk": "-vulkan",
+    "metal": "-metal",
+}
+
+UNREAL_INTERLOCK_OVERRIDES = {
+    "": "raster",
+    "atomic": "atomics",
+    "msaa": "msaa",
+}
+
+SUPPORTED_UNREAL_BACKENDS = {
+    "unreal": ["metal"] if platform.system() == "Darwin" else
+              ["vk"] if platform.system() == "Linux" else
+              ["d3d", "d3d12", "vk"],
+    "unreal_android": ["vk"],
+    "unreal_ios": ["metal"],
+}
+
+DEFAULT_UNREAL_BACKENDS = {
+    "unreal": "metal" if platform.system() == "Darwin" else
+              "vk" if platform.system() == "Linux" else "d3d12",
+    "unreal_android": "vk",
+    "unreal_ios": "metal",
+}
+
+def split_unreal_backend(name):
+    for rhi in sorted(UNREAL_RHI_SWITCHES, key=len, reverse=True):
+        if name.startswith(rhi):
+            return rhi, name[len(rhi):]
+    return None, name
+
+def unreal_engine_args(target, name):
+    rhi, suffix = split_unreal_backend(name)
+    supported = SUPPORTED_UNREAL_BACKENDS.get(target, [])
+    if rhi is None or rhi not in supported:
+        sys.exit("backend '%s' is not supported on --target=%s (supported RHIs: %s)"
+                 % (name, target, ", ".join(supported)))
+    engine_args = [UNREAL_RHI_SWITCHES[rhi]]
+    if target == "unreal_android":
+        dpcvars = ["r.RenderTargetPoolMin=32"]
+        fake_limit = os.getenv("RIVE_VULKAN_FAKE_MEMORY_LIMIT")
+        if fake_limit:
+            dpcvars.append("r.Vulkan.FakeMemoryLimit=%s" % fake_limit)
+        extra_dpcvars = os.getenv("RIVE_EXTRA_DPCVARS")
+        if extra_dpcvars:
+            dpcvars.append(extra_dpcvars)
+        engine_args.append("-dpcvars=" + ",".join(dpcvars))
+    if suffix in UNREAL_INTERLOCK_OVERRIDES:
+        engine_args.append("-riveRenderOverride=%s" % UNREAL_INTERLOCK_OVERRIDES[suffix])
+    extra_args = os.getenv("RIVE_EXTRA_UNREAL_ARGS")
+    if extra_args:
+        engine_args.extend(extra_args.split())
+    return engine_args
+
+def unreal_client_config():
+    # -r builds the native tools release, so package unreal to match.
+    return "Test" if args.release else "Development"
+
+def unreal_android_installer(stage_dir):
+    config = unreal_client_config()
+    name = ("Install_rive_unreal-arm64.bat" if config == "Development"
+            else "Install_rive_unreal-Android-%s-arm64.bat" % config)
+    if os.path.exists(os.path.join(stage_dir, name)):
+        return os.path.abspath(os.path.join(stage_dir, name))
+    staged = sorted(glob.glob(os.path.join(stage_dir, "Install_rive_unreal*.bat")))
+    raise RuntimeError(
+        "expected %s in %s for the %s config, found: %s" %
+        (name, stage_dir, config,
+         ", ".join(os.path.basename(s) for s in staged) or "nothing"))
+
+# The host platform whose build-rive.py target produces the plugin's headers.
+UNREAL_HOST_PLATFORMS = {"Windows": "Windows", "Darwin": "Mac", "Linux": "Linux"}
+
+def unreal_script(*parts):
+    rive_tools_dir = os.path.dirname(os.path.realpath(__file__))
+    return os.path.join(rive_tools_dir, "..", "..", "runtime_unreal", *parts)
+
+def build_rive_host():
+    """Build the host rive libraries and stage the headers and generated shaders.
+
+    Cooking for any target builds the editor, which links these, and only a
+    host build produces the headers every platform then compiles against.
+    """
+    subprocess.check_call([sys.executable,
+                           unreal_script("Plugins", "Rive", "Scripts",
+                                         "build-rive", "build-rive.py"),
+                           "-r", "-t",
+                           UNREAL_HOST_PLATFORMS[platform.system()]])
+
+def build_rive_unreal():
+    """Build the rive libraries the plugin links, and stage what it compiles against.
+
+    A console overrides this: its libraries come from a premake root of its
+    own, and it needs build_rive_host() as well.
+    """
+    subprocess.check_call([sys.executable,
+                           unreal_script("Plugins", "Rive", "Scripts",
+                                         "build-rive", "build-rive.py"),
+                           "-r", "-t", UNREAL_TARGET_PLATFORMS[args.target]])
+
+def unreal_package_platform_args():
+    """How packaging names this target. A console overrides it: the platform
+    table package_project.py keeps is public and has no entry for one."""
+    return ["--platform", UNREAL_TARGET_PLATFORMS[args.target]]
+
+def ios_device_version(udid):
+    listing = subprocess.check_output(["xcrun", "xctrace", "list", "devices"]).decode()
+    for line in listing.splitlines():
+        if udid not in line:
+            continue
+        version = re.search(r"\(([0-9]+)\.[0-9.]+\)", line)
+        if version:
+            return int(version.group(1))
+    return None
+
+def unreal_ios_bundle():
+    stage_dir = os.path.join(args.builddir, "IOS")
+    bundles = sorted(glob.glob(os.path.join(stage_dir, "*.app")))
+    if not bundles:
+        ipas = sorted(glob.glob(os.path.join(stage_dir, "*.ipa")))
+        raise RuntimeError(
+            "no .app in %s; devicectl and the bundle id both need the .app "
+            "directory that package_project.py archives%s"
+            % (stage_dir,
+               ", but only these .ipa archives are there: %s" %
+               ", ".join(os.path.basename(i) for i in ipas) if ipas else ""))
+    return bundles[0]
+
+def unreal_ios_bundle_id():
+    bundle = unreal_ios_bundle()
+    plist = os.path.join(bundle, "Info.plist")
+    return subprocess.check_output(
+        ["plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", plist]
+    ).decode().strip()
+
+def install_unreal_package():
+    """Put the packaged build on the device. Nothing to do where the launch
+    command reaches it from the host."""
+    if args.target != "unreal_ios":
+        return
+    subprocess.check_call(["xcrun", "devicectl", "device", "install", "app",
+                           "--device", args.ios_udid, unreal_ios_bundle()])
+
+def package_unreal_project():
+    # No engine path -> assume the project is already packaged (legacy behavior).
+    if not args.unreal_engine:
+        return
+    if not args.no_rebuild:
+        build_rive_unreal()
+    # The native build is ours either way, so packaging never repeats it.
+    subprocess.check_call([sys.executable,
+                           unreal_script("Scripts", "package_project.py"),
+                           "--engine", args.unreal_engine,
+                           "--output", os.path.abspath(args.builddir),
+                           "--config", unreal_client_config(),
+                           "--no-rive-build"] + unreal_package_platform_args())
+
+def main():
+    # Parse skipped tests. These only apply to a whole-corpus sweep: gms or
+    # goldens pointed at a directory. Anything drawing a single file it was
+    # handed -- the player, or gms/goldens given one .riv -- would just be left
+    # with nothing to fetch.
+    # NOTE: a nonexistent --src is not a single file. Leave the skip list on
+    # and let the existing os.path.exists() check report it.
+    rive_skipped_golden_tests = os.getenv("RIVE_SKIPPED_GOLDEN_TESTS")
+    if (rive_skipped_golden_tests and not os.path.isfile(args.src) and
+            not set(args.tools).isdisjoint(("gms", "goldens"))):
+        for test in rive_skipped_golden_tests.split(","):
+            if '/' in test:
+                # A "/" character separates a specific backend from a test name.
+                # Only skip one of these tests if it's the same backend we're currently running.
+                backend, test = test.split("/", 1)
+                if backend != args.backend:
+                    continue
+            skipped_golden_tests.add(test)
+        if args.verbose:
+            print("[server] skipped_golden_tests: ", skipped_golden_tests, flush=True)
+
+    buildconfig = "release" if args.release else "debug"
+
+    if args.target == "android":
+        args.jobs_per_tool = 1 # Android can only launch one process at a time.
+        if args.builddir == None:
+            args.builddir = f"out/android_{args.android_arch}_{buildconfig}"
+        if args.backend == None:
+            args.backend = "gl"
+    elif args.target == "ios":
+        if args.builddir == None:
+            args.builddir = f"out/ios_{buildconfig}"
+        elif args.builddir != "out/ios_debug":
+            print("The iOS wrapper app requires --builddir=out/ios_debug")
+            return -1
+        if args.backend == None:
+            args.backend = "metal"
+        args.jobs_per_tool = 1 # iOS can only launch one process at a time.
+        args.remote = True # Since we can't do port forwarding in iOS, it always has to be remote.
+        if not args.ios_udid:
+            args.ios_udid = subprocess.check_output(["idevice_id", "-l"]).decode().strip()
+        device_info = os.popen("xcrun xctrace list devices | grep %s" % args.ios_udid).read()
+        target_info["ios_version"] = int(re.search(r".+\(([0-9]+)\.[0-9\.]+\).+$",
+                                                   device_info).group(1))
+    elif args.target == "iossim":
+        if args.builddir == None:
+            args.builddir = f"out/iossim_universal_{buildconfig}"
+        elif args.builddir != "out/iossim_universal_debug":
+            print("The iOS-simulator wrapper app requires --builddir=out/iossim_universal_debug")
+            return -1
+        if args.backend == None:
+            args.backend = "metal"
+        args.jobs_per_tool = 1 # iOS can only launch one process at a time.
+        args.remote = True # Since we can't do port forwarding in iOS, it always has to be remote.
+        if not args.ios_udid:
+            args.ios_udid = "booted"
+    elif args.target in ('unreal', 'unreal_android', 'unreal_ios'):
+         # currently, unreal needs to run only one job at a time for goldens and gms to work
+        args.jobs_per_tool = 1
+        if args.builddir == None:
+            args.builddir = os.path.join("out", buildconfig)
+        if args.backend == None:
+            args.backend = DEFAULT_UNREAL_BACKENDS[args.target]
+        unreal_engine_args(args.target, args.backend)
+        if args.target == 'unreal_ios':
+            args.remote = True
+            if not args.ios_udid:
+                udids = subprocess.check_output(["idevice_id", "-l"]).decode().split()
+                if len(udids) != 1:
+                    print("expected exactly one attached iOS device, found %d; "
+                          "pass --ios_udid" % len(udids))
+                    return -1
+                args.ios_udid = udids[0]
+            ios_version = ios_device_version(args.ios_udid)
+            if ios_version is None:
+                print("no device matching --ios_udid=%s in 'xcrun xctrace list devices'"
+                      % args.ios_udid)
+                return -1
+            if ios_version < 17:
+                print("--target=unreal_ios launches through devicectl, which needs "
+                      "iOS 17 or newer; this device reports iOS %d" % ios_version)
+                return -1
+            target_info["ios_version"] = ios_version
+    elif args.target.startswith("web"):
+        args.jobs_per_tool = 1
+        if args.builddir == None:
+            args.builddir = f"out/wasm_{buildconfig}"
+        if args.backend == None:
+            args.backend = "gl"
+    elif args.target == "console":
+        args.jobs_per_tool = 1
+        args.remote = True 
+    else:
+        assert(args.target == "host")
+        if args.builddir == None:
+            args.builddir = os.path.join("out", buildconfig)
+        if args.backend == None:
+            args.backend = "metal" if platform.system() == "Darwin" else \
+                           "d3d" if platform.system() == "Windows" else \
+                           "gl"
+
+    # Turn on Metal validation layers. (iOS/iossim set these on their launch
+    # commands.)
+    # NOTE: metal_validation_env() is empty on non-Metal targets.
+    os.environ.update(metal_validation_env())
+
+    if args.server_only:
+        args.jobs_per_tool = 1 # Only print the command for each job once.
+
+    rive_tools_dir = os.path.dirname(os.path.realpath(__file__))
+    if "ios" in args.target:
+        # ios links statically, so we need to build every tool every time.
+        build_targets = ["gms", "goldens", "player"]
+    else:
+        build_targets = args.tools
+
+    # Build the native code. "--no-rebuild" owns every native build: this one,
+    # and build_rive_unreal() inside package_unreal_project().
+    #
+    # Unreal never runs these host tools -- only their names survive into the
+    # launch command -- so it skips them and builds the rive libraries its
+    # plugin links during packaging instead.
+    if not args.no_rebuild and "unreal" not in args.target:
+        build_rive = [os.path.join(rive_tools_dir, "../build/build_rive.sh")]
+        if os.name == "nt":
+            if subprocess.run(["where", "msbuild.exe"]).returncode == 0:
+                # msbuild.exe is already on the $PATH; launch build_rive.sh directly.
+                build_rive = ["sh"] + build_rive
+            else:
+                # msbuild.exe is not on the path; go through build_rive.bat.
+                build_rive[0] = os.path.splitext(build_rive[0])[0] + '.bat'
+        subprocess.check_call(build_rive + ["rebuild", args.builddir] + build_targets)
+
+    # Build the wrapper app, if applicable
+    if not args.no_install:
+        if "unreal" in args.target:
+            package_unreal_project()
+        if args.target == "unreal_android":
+            unreal_android_path = os.path.join(args.builddir, "Android_ASTC")
+            current = os.getcwd()
+            installer = unreal_android_installer(unreal_android_path)
+            os.chdir(unreal_android_path)
+            subprocess.check_call([installer])
+            print()
+            os.chdir(current)
+        if args.target == "android":
+            # Copy the native libraries into the android_tests project.
+            jnidir = os.path.join("android_tests", "app", "src", "main", "jniLibs")
+            shutil.rmtree(jnidir, ignore_errors=True)
+            if args.android_arch == "arm64":
+                arch_full_name = "arm64-v8a"
+            else:
+                assert(args.android_arch == "arm")
+                arch_full_name = "armeabi-v7a"
+            os.makedirs(os.path.join(jnidir, arch_full_name))
+            for tool in build_targets:
+                sharedlib = "lib%s.so" % tool
+                shutil.copy(os.path.join(args.builddir, sharedlib),
+                            os.path.join(jnidir, arch_full_name))
+            if "vk" in args.backend or "vulkan" in args.backend:
+                layerpath = os.path.join("dependencies", "Vulkan-ValidationLayers")
+                layersubdir = "android-binaries-1.4.328.0"
+                if not os.path.exists(os.path.join(layerpath, layersubdir)):
+                    # Download the Vulkan validation layers.
+                    print("Downloading Android Vulkan validation layers...", flush=True)
+                    url = "https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/"\
+                          "vulkan-sdk-1.4.328.0/android-binaries-1.4.328.0.zip"
+                    zipfile.ZipFile(urllib.request.urlretrieve(url)[0], 'r').extractall(path=layerpath)
+                # Bundle the Vulkan validation layers.
+                for lib in glob.glob(os.path.join(layerpath,
+                                                  layersubdir,
+                                                  arch_full_name,
+                                                  "*.so")):
+                    dst = os.path.join(jnidir, arch_full_name, os.path.basename(lib))
+                    print("  bundling %s -> %s" % (lib, dst), flush=True)
+                    shutil.copy(lib, dst)
+
+            # Build the android_tests wrapper app.
+            cwd = os.getcwd()
+            os.chdir(os.path.join(rive_tools_dir, "android_tests"))
+
+            # Check for Java availability
+            if (os.getenv("JAVA_HOME") is None and
+                subprocess.run(["java", "-version"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL).returncode != 0):
+                print("Error: Java is required to run Android Gradle tests. Please ensure the $JAVA_HOME environment variable is set. You may use Android Studio's JDK (the path can be found at Settings > Build, Execution, Deployment > Build Tools > Gradle > Gradle JDK).")
+                return -1
+
+            # Check for $ANDROID_HOME
+            if not os.getenv("ANDROID_HOME"):
+                print("Error: $ANDROID_HOME is not set. Please set it to the path of your Android SDK. You may use Android Studio's SDK (the path can be found at Settings > Languages & Frameworks > Android SDK > Android SDK Location).")
+                return -1
+
+            # Call gradlew to build the android_tests wrapper app.
+            # NOTE: this has to be an absolute path because Python 3.12 dropped
+            # the current directory from the executable search on Windows.
+            subprocess.check_call([os.path.join(os.getcwd(),
+                                                "gradlew" if os.name != "nt"
+                                                else "gradlew.bat"),
+                                   ":app:assembleDebug"])
+            os.chdir(cwd)
+        elif args.target == "ios":
+            # Build the ios_tests wrapper app.
+            subprocess.check_call(["xcodebuild",
+                                   "-destination", "generic/platform=iOS",
+                                   "-config", "Debug",
+                                   "build", "-project", "ios_tests/ios_tests.xcodeproj"])
+        elif args.target == "iossim":
+            # Build the ios_tests wrapper app for the simulator.
+            subprocess.check_call(["xcodebuild",
+                                   "-destination", "generic/platform=iOS Simulator",
+                                   "-config", "Debug",
+                                   "-sdk", "iphonesimulator",
+                                   "build", "-project", "ios_tests/ios_tests.xcodeproj"])
+
+    if args.build_only:
+        return 0
+
+    # Install the wrapper app, if applicable.
+    if not args.no_install:
+        if args.target == "android":
+            # Install the android_tests wrapper app.
+            force_stop_android_tests_apk()
+            subprocess.check_call(["adb", "install", "-r", "android_tests/app/build/outputs/apk/debug/app-debug.apk"])
+            print()
+        elif args.target == "ios":
+            # Install the ios_tests wrapper app on the device.
+            if target_info["ios_version"] >= 17:
+                # ios-deploy is no longer supported after iOS 17.
+                subprocess.check_call(["xcrun", "devicectl", "device", "install", "app", "--device",
+                                       args.ios_udid,
+                                       "ios_tests/build/Debug-iphoneos/rive_ios_tests.app"])
+            else:
+                subprocess.check_call(["ios-deploy", "--bundle",
+                                       "ios_tests/build/Debug-iphoneos/rive_ios_tests.app"])
+            print()
+        elif "unreal" in args.target or args.target == "console":
+            install_unreal_package()
+        elif args.target == "iossim":
+            # Install the ios_tests wrapper app on the simulator.
+            subprocess.check_call(["xcrun", "simctl", "install", args.ios_udid,
+                                   "ios_tests/build/Debug-iphonesimulator/rive_ios_tests.app"])
+            print()
+
+    if args.install_only:
+        return 0
+
+    if args.target == "android":
+        atexit.register(force_stop_android_tests_apk)
+
+    with (ToolServer(TestHarnessRequestHandler) as test_harness_server):
+        test_harness_server.serve_forever_async()
+
+        # On many targets we can't launch >1 instance of the app at a time.
+        serial_deploy = not args.server_only and ("ios" in args.target or
+                                                  args.target == "android" or
+                                                  "unreal" in args.target or
+                                                  args.target.startswith("web") or 
+                                                  args.target == "console")
+        procs = []
+
+        # Serially deployed targets are finished once they've sent their
+        # shutdown event. If, 1.5 seconds after sending the shutdown event, they
+        # still haven't exited, terminate them.
+        SERIAL_TARGET_TERMINATE_SECONDS = 1.5
+
+        def keyboard_interrupt_handler(signal, frame):
+            if os.name == "nt":
+                print("^C", end="", flush=True)
+            cancel_input()
+            for proc in procs:
+                proc.terminate()
+            if not test_harness_server.wait_for_shutdown_event(1.5):
+                test_harness_server.synthesize_shutdown_event()
+        signal.signal(signal.SIGINT, keyboard_interrupt_handler)
+
+        if "gms" in args.tools:
+            os.makedirs(args.outdir, exist_ok=True)
+            if serial_deploy:
+                test_harness_server.reset_shutdown_event()
+                procs = launch_gms(test_harness_server)
+                assert(len(procs) == 1)
+                test_harness_server.wait_for_shutdown_event()
+                procs[0].join(SERIAL_TARGET_TERMINATE_SECONDS)
+                if procs[0].is_alive():
+                    procs[0].terminate()
+                    procs[0].join()
+                procs = []
+                if args.target == "android":
+                    force_stop_android_tests_apk()
+                    time.sleep(3)
+            else:
+                procs += launch_gms(test_harness_server)
+
+        if "goldens" in args.tools:
+            os.makedirs(args.outdir, exist_ok=True)
+            if serial_deploy:
+                test_harness_server.reset_shutdown_event()
+                procs = launch_goldens(test_harness_server)
+                assert(len(procs) == 1)
+                test_harness_server.wait_for_shutdown_event()
+                procs[0].join(SERIAL_TARGET_TERMINATE_SECONDS)
+                if procs[0].is_alive():
+                    procs[0].terminate()
+                    procs[0].join()
+                procs = []
+                if args.target == "android":
+                    force_stop_android_tests_apk()
+                    time.sleep(3)
+            else:
+                procs += launch_goldens(test_harness_server)
+
+        if "player" in args.tools:
+            test_harness_server.reset_shutdown_event()
+            procs = [launch_player(test_harness_server)]
+            test_harness_server.wait_for_shutdown_event()
+            procs[0].join(SERIAL_TARGET_TERMINATE_SECONDS)
+            if procs[0].is_alive():
+                procs[0].terminate()
+                procs[0].join()
+            procs = []
+
+        # Wait for the processes to finish (if not in serial_deploy mode).
+        for proc in procs:
+            proc.join()
+
+        if args.server_only:
+            # Sleep until user input.
+            input("\nPress enter to shutdown...")
+
+        print("done                          ", flush=True)
+
+        test_harness_server.shutdown()
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

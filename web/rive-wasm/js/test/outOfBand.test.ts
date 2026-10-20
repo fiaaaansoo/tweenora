@@ -1,0 +1,203 @@
+// Note: This uses the canvas-advanced-single module, which has WASM embedded in JS
+// which means there is no loading an external WASM file for tests
+import * as rive from "../src/rive";
+import { loadFile } from "./helpers";
+import { CustomFileAssetLoaderWrapper } from "../src/utils/finalizationRegistry";
+
+function makeRuntime() {
+  return {
+    CustomFileAssetLoader: function (this: any, { loadContents }: any) {
+      this.loadContents = loadContents;
+    },
+  } as any;
+}
+
+function makeAsset(overrides: {
+  isImage?: boolean;
+  isAudio?: boolean;
+  isFont?: boolean;
+}) {
+  return { isImage: false, isAudio: false, isFont: false, ...overrides } as any;
+}
+
+describe("CustomFileAssetLoaderWrapper.loadContents", () => {
+  it("returns false and does not call callback for unknown asset type", () => {
+    const callback = jest.fn();
+    const wrapper = new CustomFileAssetLoaderWrapper(makeRuntime(), callback);
+
+    const result = wrapper.loadContents(makeAsset({}), new Uint8Array());
+
+    expect(result).toBe(false);
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("calls callback with ImageAssetWrapper for image assets", () => {
+    const callback = jest.fn().mockReturnValue(true);
+    const wrapper = new CustomFileAssetLoaderWrapper(makeRuntime(), callback);
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    const result = wrapper.loadContents(makeAsset({ isImage: true }), bytes);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][1]).toBe(bytes);
+    expect(result).toBe(true);
+  });
+
+  it("calls callback with AudioAssetWrapper for audio assets", () => {
+    const callback = jest.fn().mockReturnValue(true);
+    const wrapper = new CustomFileAssetLoaderWrapper(makeRuntime(), callback);
+    const bytes = new Uint8Array([4, 5, 6]);
+
+    const result = wrapper.loadContents(makeAsset({ isAudio: true }), bytes);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][1]).toBe(bytes);
+    expect(result).toBe(true);
+  });
+
+  it("calls callback with FontAssetWrapper for font assets", () => {
+    const callback = jest.fn().mockReturnValue(true);
+    const wrapper = new CustomFileAssetLoaderWrapper(makeRuntime(), callback);
+    const bytes = new Uint8Array([7, 8, 9]);
+
+    const result = wrapper.loadContents(makeAsset({ isFont: true }), bytes);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][1]).toBe(bytes);
+    expect(result).toBe(true);
+  });
+});
+
+test("Ensure onAsset called with hosted asset, contains cdn information.", (done) => {
+  const canvas = document.createElement("canvas");
+  const r = new rive.Rive({
+    canvas: canvas,
+    buffer: loadFile("assets/hosted_png_asset.riv"),
+    autoplay: true,
+    assetLoader: (asset, bytes) => {
+      expect(bytes.length).toBe(0);
+
+      expect(asset.name).toBe("some.png");
+      expect(asset.cdnUuid).toBe("0b97b223-4bce-4502-8b07-51867a49d78d");
+      expect(asset.fileExtension).toBe("png");
+      expect(asset.isImage).toBe(true);
+      expect(asset.isFont).toBe(false);
+      done();
+      return false;
+    },
+  });
+});
+
+test("Ensure onAsset called with embedded asset, contains bytes.", async () => {
+  const mock = jest.fn();
+  window.URL.createObjectURL = mock;
+  const canvas = document.createElement("canvas");
+  await new Promise<void>((resolve) => {
+    new rive.Rive({
+      canvas: canvas,
+      buffer: loadFile("assets/embedded_png_asset.riv"),
+      autoplay: true,
+      assetLoader: (asset, bytes) => {
+        expect(bytes.length).toBe(308);
+        expect(asset.name).toBe("1x1.png");
+        expect(asset.cdnUuid).toBe("");
+        expect(asset.fileExtension).toBe("png");
+        expect(asset.isImage).toBe(true);
+        expect(asset.isFont).toBe(false);
+
+        resolve();
+        return false;
+      },
+    });
+  });
+
+  // embedded assets do a fake request grabbing a blob
+  // also, this might be suffer from race conditions, but the load
+  // should be initialized once a file is read
+  expect(window.URL.createObjectURL).toHaveBeenCalledTimes(1);
+  expect(mock.mock.calls[0][0].size).toBe(308);
+});
+
+test("Ensure onAsset called with referenced asset, contains no cdn/byte information.", (done) => {
+  const canvas = document.createElement("canvas");
+  const r = new rive.Rive({
+    canvas: canvas,
+    buffer: loadFile("assets/referenced_png_asset.riv"),
+    autoplay: true,
+    assetLoader: (asset, bytes) => {
+      expect(bytes.length).toBe(0);
+      expect(asset.name).toBe("1x1.png");
+      expect(asset.cdnUuid).toBe("");
+      expect(asset.fileExtension).toBe("png");
+      expect(asset.isImage).toBe(true);
+      expect(asset.isFont).toBe(false);
+      done();
+      return false;
+    },
+  });
+});
+
+test("Ensure onAsset called with referenced asset, contains no cdn/byte information.", (done) => {
+  const canvas = document.createElement("canvas");
+  const r = new rive.Rive({
+    canvas: canvas,
+    buffer: loadFile("assets/referenced_font_asset.riv"),
+    autoplay: true,
+    assetLoader: (asset, bytes) => {
+      expect(bytes.length).toBe(0);
+      expect(asset.name).toBe("Inter");
+      expect(asset.cdnUuid).toBe("");
+      expect(asset.fileExtension).toBe("ttf");
+      expect(asset.isImage).toBe(false);
+      expect(asset.isFont).toBe(true);
+      done();
+      return false;
+    },
+  });
+});
+
+test("Ensure onAsset called with referenced asset, contains no cdn/byte information.", (done) => {
+  const canvas = document.createElement("canvas");
+  const r = new rive.Rive({
+    canvas: canvas,
+    buffer: loadFile("assets/referenced_font_asset.riv"),
+    autoplay: true,
+    assetLoader: (asset, bytes) => {
+      expect(bytes.length).toBe(0);
+      expect(asset.name).toBe("Inter");
+      expect(asset.cdnUuid).toBe("");
+      expect(asset.fileExtension).toBe("ttf");
+      expect(asset.isImage).toBe(false);
+      expect(asset.isFont).toBe(true);
+      done();
+      return false;
+    },
+  });
+});
+
+test("Test audio asset has correct data", (done) => {
+  let expected = 2;
+  const canvas = document.createElement("canvas");
+  const r = new rive.Rive({
+    canvas: canvas,
+    buffer: loadFile("assets/audio_test.riv"),
+    autoplay: true,
+    assetLoader: (asset, bytes) => {
+      expect(asset.isAudio).toBe(true);
+
+      if (asset.isAudio && asset.cdnUuid.length > 0) {
+        expect(asset.name).toBe("hosted");
+        expect(asset.uniqueFilename).toBe("hosted-55368.wav");
+        expect(asset.fileExtension).toBe("wav");
+        expect(asset.cdnUuid).toBe("79b65f1e-94ea-4191-b5ad-b3d5495b6343");
+      } else if (asset.isAudio && bytes.length > 0) {
+        expect(asset.name).toBe("embedded");
+        expect(asset.uniqueFilename).toBe("embedded-0.wav");
+        expect(asset.fileExtension).toBe("wav");
+      }
+      expected--;
+      if (expected == 0) done();
+      return false;
+    },
+  });
+});

@@ -1,0 +1,31 @@
+name: Build JS
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "20.x"
+          registry-url: "https://registry.npmjs.org"
+      - name: Checkout Rive Renderer Repo
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          repository: rive-app/rive-renderer
+          token: ${{ secrets.PAT_GITHUB }}
+          path: ./wasm/submodules/rive-renderer
+          ref: main
+      - name: Install modules
+        run: cd js && npm install
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+      - name: Build
+        env:
+          PAT_GITHUB: ${{ secrets.PAT_GITHUB }}
+        run: cd js && ./build.sh
+      - name: Run tests
+        run: cd js && npm test

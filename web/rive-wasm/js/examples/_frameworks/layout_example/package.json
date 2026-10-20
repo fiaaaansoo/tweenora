@@ -1,0 +1,19 @@
+{
+  "name": "parcel_layout_example",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "scripts": {
+    "start": "parcel index.html",
+    "build": "parcel build index.html --public-url ."
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "parcel": "^2.13.3"
+  },
+  "dependencies": {
+    "@rive-app/canvas": "file:../../../npm/canvas_single",
+    "regenerator-runtime": "^0.14.1"
+  }
+}

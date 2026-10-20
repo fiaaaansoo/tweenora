@@ -1,0 +1,553 @@
+import * as rc from "../rive_advanced.mjs";
+import { Key, keyboardEventToRiveKey, modifiersFromEvent } from "./keyMap";
+import { isKeyEventClaimed } from "../semantics/claimedKeyEvents";
+import { TextInputProxy } from "./textInputProxy";
+
+/**
+ * Defaults suppressed while typing (scroll/navigate/submit). Tab is traversal's; proxy
+ * Space returns earlier as a printable.
+ */
+const EDITING_NAV_CODES = new Set<string>([
+  "Space",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Backspace",
+  "Delete",
+  "Home",
+  "End",
+  "Enter",
+  "NumpadEnter",
+]);
+
+/** A keystroke that types a character (not a Ctrl/Cmd shortcut). */
+function isPrintable(event: KeyboardEvent): boolean {
+  return event.key.length === 1 && !event.ctrlKey && !event.metaKey;
+}
+
+function isArrowKey(key: number): boolean {
+  return (
+    key === Key.left || key === Key.right || key === Key.up || key === Key.down
+  );
+}
+
+/**
+ * Alt/Ctrl/Meta arrows are browser/OS shortcuts (Alt+Left = back, Cmd+Arrow, etc.).
+ * Shift is allowed: it is the spatial-navigation chord in Vivaldi/Opera.
+ */
+function hasShortcutModifier(event: KeyboardEvent): boolean {
+  return event.altKey || event.ctrlKey || event.metaKey;
+}
+
+export interface KeyboardInteractionsParams {
+  canvas: HTMLCanvasElement;
+  stateMachine: rc.StateMachineInstance;
+  /**
+   * Whether this canvas has focus nodes that should participate in tab traversal.
+   * When true, Tab/Shift+Tab will be intercepted and routed to the Rive focus manager.
+   * Tab is released to the page only when focusNext() returns false and Rive no longer holds
+   * focus; a Stop edge also returns false but keeps focus, so Tab stays trapped.
+   */
+  hasFocusNodes: boolean;
+  /**
+   * Optional accessibility overlay that should be treated as part of this Rive
+   * instance's focus domain. This is lazy because the overlay may be created
+   * after keyboard listeners are registered.
+   */
+  getOverlayElement?: () => HTMLElement | null;
+}
+
+/**
+ * Tracks the relationship between DOM focus inside this Rive focus domain (canvas or semantic overlay)
+ * and Rive's internal focus for the current focus session.
+ *
+ * NotFocused   — DOM focus left the domain, Rive released focus internally, or Tab walked
+ *                off the end of the tree. Keyboard input isn't ours, so Tab is ignored and
+ *                reaches the next page element.
+ * EntryPending — DOM focus is inside the domain but Rive holds no node yet, so the next Tab
+ *                enters the focus tree. Set by pointer focus on the canvas, by assistive technology (AT) focus landing
+ *                in the overlay, and by keyboard focus whose entry attempt found no eligible node.
+ * RiveFocused  — a Rive node holds focus. Tab/Shift+Tab route to the Rive focus manager and stay
+ *                inside the domain until either Rive reports focus ended (pollFocusState) or
+ *                Tab walks off the edge of the tree (focusNext()/focusPrevious() returns false and
+ *                Rive no longer holds focus).
+ *
+ * Keyboard focus on the canvas enters the tree immediately: onCanvasFocus infers direction from
+ * where focus came from and goes straight to RiveFocused when a node accepts.
+ */
+export enum FocusSessionState {
+  NotFocused = "notFocused",
+  EntryPending = "entryPending",
+  RiveFocused = "riveFocused",
+}
+
+/**
+ * Manages keyboard and DOM focus interactions for Rive's focus domain (<canvas>, semantic
+ * overlay, text input proxy). Owns the proxy and the text input session state.
+ * Because keyboard events can apply on either part of the domain, we need to track what events we should
+ * handle/intercept, and when to release focus back to the page outside of the domain.
+ *
+ * Tracks the canvas focus session state (focusSessionState) and routes
+ * Tab/Shift+Tab to the Rive state machine's focus manager. Exposes shared
+ * state as properties so the Rive render loop can read them directly.
+ */
+export class KeyboardInteractions {
+  public focusSessionState: FocusSessionState = FocusSessionState.NotFocused;
+
+  private canvas: HTMLCanvasElement;
+  private mainSm: rc.StateMachineInstance;
+  private hasFocusNodes: boolean;
+  /** Cached callback that returns the accessibility overlay element once created. */
+  private getOverlayElement?: () => HTMLElement | null;
+
+  /** Whether the canvas currently has browser DOM focus. */
+  private canvasHasFocus = false;
+  /** After Tab exits the last Rive node, ignore keydowns until focus re-enters the focus domain. */
+  private focusDomainReleased = false;
+  /** Overlay element currently wired with focusin/keydown listeners, if any. */
+  private currentOverlayElement: HTMLElement | null = null;
+  /** Canvas parent (or document) watched for focusin to attach overlay listeners lazily. */
+  private focusDomainHost: HTMLElement | Document;
+  /** Codes whose keydown an overlay widget took, so their keyup is skipped too. */
+  private claimedKeyCodes = new Set<string>();
+
+  // One hidden <input> per instance: C++ has one primary focus, so only one text input
+  // session is live at a time. It holds no value; it only forwards input.
+  private readonly inputProxy: TextInputProxy;
+  private textInputSessionActive = false;
+
+  constructor({
+    canvas,
+    stateMachine,
+    hasFocusNodes,
+    getOverlayElement,
+  }: KeyboardInteractionsParams) {
+    this.canvas = canvas;
+    this.mainSm = stateMachine;
+    this.hasFocusNodes = hasFocusNodes;
+    this.getOverlayElement = getOverlayElement;
+    this.focusDomainHost = canvas.parentElement ?? document;
+
+    canvas.addEventListener("focus", this.onCanvasFocus);
+    canvas.addEventListener("blur", this.onCanvasBlur);
+    canvas.addEventListener("keydown", this.onKeyDown);
+    canvas.addEventListener("keyup", this.onKeyUp);
+    this.focusDomainHost.addEventListener("focusin", this.onFocusDomainHostFocusIn);
+    this.syncOverlayListener();
+
+    this.inputProxy = new TextInputProxy({
+      container: canvas.parentElement ?? document.body,
+      canvas,
+      textInput: (text) => this.mainSm.textInput(text),
+      // Proxy keystrokes go through the same handlers as the canvas.
+      onKeyDown: this.onKeyDown,
+      onKeyUp: this.onKeyUp,
+      onCopy: this.onCopy,
+      onBlur: (relatedTarget) => this.handleProxyBlur(relatedTarget),
+    });
+  }
+
+  public isTextInputSessionActive(): boolean {
+    return this.textInputSessionActive;
+  }
+
+  /** Session active and the proxy holds DOM focus. */
+  public isEditingHostFocused(): boolean {
+    return this.textInputSessionActive && this.inputProxy.hasDomFocus();
+  }
+
+  /** @param focusProxy move DOM focus to the proxy; false leaves it where it is. */
+  public beginTextInputSession(focusProxy: boolean): void {
+    this.textInputSessionActive = true;
+    this.focusSessionState = FocusSessionState.RiveFocused;
+    if (focusProxy) this.inputProxy.focus();
+  }
+
+  /** @param fromBlur focus is already leaving; don't park it on the canvas. */
+  public endTextInputSession(fromBlur = false): void {
+    if (!this.textInputSessionActive) return;
+    this.textInputSessionActive = false;
+    this.inputProxy.endSession();
+    if (fromBlur || !this.inputProxy.hasDomFocus()) return;
+    // Nothing took DOM focus from the proxy (e.g. semantics is off). Park it on the
+    // canvas so keys keep reaching Rive; onCanvasFocus ignores focus from the input proxy.
+    this.canvas.focus({ preventScroll: true });
+  }
+
+  /** Must run synchronously in the pointer gesture or mobile keyboards won't open. */
+  public summonForPointer(): void {
+    if (this.textInputSessionActive) this.inputProxy.focus();
+    else this.beginTextInputSession(true);
+  }
+
+  /** The text-input proxy, for the semantics layer to decorate while editing. */
+  public get editingHost(): TextInputProxy {
+    return this.inputProxy;
+  }
+
+  /**
+   * The proxy is always empty: copy Rive's selection; always preventDefault.
+   */
+  private onCopy = (event: ClipboardEvent) => {
+    event.preventDefault();
+    const selected = this.mainSm.selectedText();
+    if (selected) event.clipboardData?.setData("text/plain", selected);
+  };
+
+  private handleProxyBlur(relatedTarget: EventTarget | null): void {
+    // Teardown already in progress (endTextInputSession blurred the proxy).
+    if (!this.textInputSessionActive) return;
+    // Still in Rive or the document blurred: keep the session (pollFocusState tears down).
+    if (this.blurStaysWithRive(relatedTarget)) return;
+    // Blurred out of Rive entirely: release C++ focus and end the session.
+    this.mainSm.clearFocus();
+    this.endTextInputSession(true);
+    this.focusSessionState = FocusSessionState.NotFocused;
+  }
+
+  /**
+   * Set the FocusSessionState. Useful for invoking a Rive "blur" without actually blurring from the <canvas>. This
+   * helps put the DOM focus state on the canvas rather than the <body>, so the user doesn't lose the spot in page navigation
+   *
+   * @param state FocusSessionState enum
+   */
+  public setFocusSessionState(state: FocusSessionState): void {
+    this.focusSessionState = state;
+  }
+
+  /**
+   * Called by pollFocusState on the Rive instance when it observes hasFocus=true. Rive acquired
+   * focus internally (e.g. via a listener action or state transition) without a DOM focus event,
+   * so mark the session RiveFocused. This cannot resurrect a session that a DOM blur ended,
+   * because onCanvasBlur clears Rive's focus alongside it.
+   */
+  public notifyRiveFocused(): void {
+    this.focusSessionState = FocusSessionState.RiveFocused;
+  }
+
+  /**
+   * Handles the canvas gaining browser focus. The behavior differs based on how focus was gained -
+   *
+   * Pointer-driven focus: the canvas now has focus but Rive holds nothing yet, so we move to EntryPending — this lets the
+   * next Tab enter the focus tree even when the focus is pointer-driven
+   *
+   * Keyboard-driven focus: we enter the Rive focus tree immediately once canvas gains focus.
+   * The direction is inferred from where focus came from: an element before the canvas in DOM order
+   * means a forward Tab (focusNext), one after means a Shift+Tab (focusPrevious). :focus-visible
+   * gates this so a click doesn't yank Rive focus to the first node on the focus event itself.
+   */
+  public onCanvasFocus = (event: FocusEvent) => {
+    this.syncOverlayListener();
+    this.canvasHasFocus = true;
+    this.focusDomainReleased = false;
+
+    if (
+      this.isInFocusDomain(event.relatedTarget) ||
+      !this.hasFocusNodes ||
+      this.mainSm.focusState().hasFocus
+    ) {
+      return;
+    }
+
+    this.focusSessionState = FocusSessionState.EntryPending;
+
+    // Pointer focus waits for the user's next Tab (handled in onKeyDown). Keyboard focus enters now.
+    if (!this.isKeyboardDrivenFocus()) return;
+    const forward = this.cameFromBeforeCanvas(event.relatedTarget as Node | null);
+    if (forward ? this.mainSm.focusNext() : this.mainSm.focusPrevious()) {
+      this.focusSessionState = FocusSessionState.RiveFocused;
+    }
+  };
+
+  /**
+   * Marks internal state that the canvas has lost DOM focus. Do not actually clear
+   * Rive focus though if:
+   * 1. DOM focus is still within Rive domain (i.e., semantic overlay)
+   * 2. Document just lost focus (i.e. tab switching)
+   * 
+   * When we're not in either of those buckets, it's safe to call `clearFocus()` on the SMI.
+   */
+  public onCanvasBlur = (event: FocusEvent) => {
+    // Must stay before the state reset because beginTextInputSession sets the session state and
+    // then focuses the proxy, which synchronously blurs the canvas.
+    if (this.inputProxy.owns(event.relatedTarget)) return;
+    this.focusSessionState = FocusSessionState.NotFocused;
+    this.canvasHasFocus = false;
+
+    if (this.blurStaysWithRive(event.relatedTarget)) return;
+
+    this.mainSm.clearFocus();
+  };
+
+  /** Blur into the focus domain, or the whole document losing focus (tab/window switch). */
+  private blurStaysWithRive(relatedTarget: EventTarget | null): boolean {
+    return (
+      this.isInFocusDomain(relatedTarget) ||
+      (relatedTarget === null && !document.hasFocus())
+    );
+  }
+
+  /**
+   * Assistive technology (AT) focus landing inside the overlay is DOM focus inside the Rive focus domain, so open a
+   * session even when no Rive node holds focus yet. shouldRiveHandleKeyEvent treats NotFocused
+   * as authoritative, so without this the overlay's Tab keydowns reach onKeyDown and get dropped
+   * at that gate — the browser would move focus out of Rive instead of to the next focus node.
+   */
+  private onOverlayFocusIn = (event: FocusEvent) => {
+    if (!this.isInOverlay(event.target)) return;
+    this.focusDomainReleased = false;
+
+    if (!this.hasFocusNodes) return;
+    if (this.focusSessionState !== FocusSessionState.NotFocused) return;
+    this.focusSessionState = this.mainSm.focusState().hasFocus
+      ? FocusSessionState.RiveFocused
+      : FocusSessionState.EntryPending;
+  };
+
+  /** Overlay listeners attach lazily, so the first focusin only ever lands here. */
+  private onFocusDomainHostFocusIn = (event: FocusEvent) => {
+    this.syncOverlayListener();
+    this.onOverlayFocusIn(event);
+    // Focus entering the proxy re-enters the focus domain, so clear any earlier Tab-out
+    // release, or onKeyDown would drop the session's keystrokes.
+    if (this.inputProxy.owns(event.target)) {
+      this.focusDomainReleased = false;
+    }
+  };
+
+  /**
+   * Handles keydown events in the Rive focus domain. We route certain keys to different functions, with the following
+   * fallback behavior:
+   * 1. Tab/Shift+Tab - check if keyInput() takes this key, if not, call focusNext/Previous traversal if there are focus nodes
+   * 2. Check - if a semantic overlay element's key handler claimed the event, don't intercept the key event further
+   * 3. Send key to `keyInput()` on Rive state machine if applicable.
+   * 4. If the keyInput returned false, and the key is directional arrow keys, call directional focus methods on state machine
+   * 5. Printables: in a session the proxy's input event supplies text; otherwise textInput().
+   *    A printable fires both keyInput and textInput even if a listener claims it.
+   * @param event KeyboardEvent
+   * @returns void
+   */
+  public onKeyDown = (event: KeyboardEvent) => {
+    this.syncOverlayListener();
+
+    // Keys that are part of an IME composition belong to the IME (candidate
+    // navigation, commit). Safari reports the first one as keyCode 229 with
+    // isComposing still false.
+    if (event.isComposing || event.keyCode === 229) return;
+
+    // After Tab exits the last Rive node, ignore keys until focus re-enters the focus domain.
+    if (this.focusDomainReleased) return;
+
+    if (!this.shouldRiveHandleKeyEvent(event)) return;
+
+    if (event.key === "Tab" && this.hasFocusNodes) {
+      // Tab listeners are matched per phase (down/repeat/up), as in the editor, so
+      // each event is offered on its own; one that isn't claimed traverses.
+      if (
+        this.mainSm.focusState().hasFocus &&
+        this.mainSm.keyInput(Key.tab, modifiersFromEvent(event), true, event.repeat)
+      ) {
+        event.preventDefault();
+        return;
+      }
+
+      const forward = !event.shiftKey;
+      const focusMoved = forward ? this.mainSm.focusNext() : this.mainSm.focusPrevious();
+      const focusState = this.mainSm.focusState();
+      // focusMoved is false both at a Stop edge (focus stays put) and after walking off
+      // the tree (focus cleared), so hasFocus discerns Stop edge from Rive releasing focus
+      if (focusMoved || focusState.hasFocus) {
+        // A Rive node holds focus — keep trapping Tab inside Rive.
+        this.focusSessionState = FocusSessionState.RiveFocused;
+        event.preventDefault();
+      } else {
+        // No more traversable nodes — release Tab to the page.
+        if (
+          document.activeElement !== this.canvas &&
+          this.isInFocusDomain(document.activeElement)
+        ) {
+          // The browser's default Tab starts from the focused element; from an overlay element,
+          // the nearest stop backward is the canvas itself. Start it from the
+          // canvas instead, so a Shift+Tab goes to the proper element before Rive.
+          this.canvas.focus({ preventScroll: true });
+        }
+        this.focusSessionState = FocusSessionState.NotFocused;
+        this.focusDomainReleased = true;
+        this.canvasHasFocus = false;
+      }
+      this.syncOverlayListener();
+      return;
+    }
+
+    // A semantic overlay widget (roving radio/tab group, slider, Enter/Space activation)
+    // already acted on this key at its target, so don't act on it twice.
+    if (isKeyEventClaimed(event)) {
+      this.claimedKeyCodes.add(event.code);
+      return;
+    }
+    // A new unclaimed press: drop any claim whose keyup never arrived.
+    this.claimedKeyCodes.delete(event.code);
+
+    const fromProxy = this.textInputSessionActive && this.inputProxy.owns(event.target);
+    const expectsKeyboardInput = this.mainSm.focusState().expectsKeyboardInput;
+
+    // The focused node gets first refusal (a TextInput's caret, or a keyboard listener
+    // on that key). Keys with no Rive equivalent map to null and aren't dispatched.
+    const key = keyboardEventToRiveKey(event);
+    let consumed =
+      key !== null &&
+      this.mainSm.keyInput(key, modifiersFromEvent(event), true, event.repeat);
+
+    // An arrow key with no consumed key input moves focus spatially. While a Rive node holds focus,
+    // arrows never scroll the page
+    if (!consumed && key !== null && isArrowKey(key) && !hasShortcutModifier(event)) {
+      consumed =
+        this.focusInDirection(key) || this.mainSm.focusState().hasFocus;
+    }
+
+    if (isPrintable(event)) {
+      // During a session the printable must reach the proxy: its input event is the
+      // (IME- and dead-key-correct) text source, and C++ inserts nothing from keyInput.
+      if (fromProxy) return;
+      // Session live but focus elsewhere in Rive: refocus the proxy so the default inserts there.
+      if (this.textInputSessionActive && this.isInFocusDomain(event.target)) {
+        this.inputProxy.focus();
+        return;
+      }
+      if (!this.textInputSessionActive && expectsKeyboardInput) {
+        this.mainSm.textInput(event.key);
+      }
+    }
+
+    // Rive consumed it, or an unmodified editing key while typing (would scroll/submit).
+    const typing = fromProxy || expectsKeyboardInput;
+    if (
+      consumed ||
+      (typing && !hasShortcutModifier(event) && EDITING_NAV_CODES.has(event.code))
+    ) {
+      event.preventDefault();
+    }
+  };
+
+  public onKeyUp = (event: KeyboardEvent) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (this.claimedKeyCodes.delete(event.code)) return;
+    if (this.focusSessionState === FocusSessionState.NotFocused) return;
+
+    const key = keyboardEventToRiveKey(event);
+    if (key === null) return;
+    this.mainSm.keyInput(key, modifiersFromEvent(event), false, false);
+  };
+
+  /** Arrow keys map to directional focus; anything else is not a focus move. */
+  private focusInDirection(key: number): boolean {
+    switch (key) {
+      case Key.left:
+        return this.mainSm.focusLeft();
+      case Key.right:
+        return this.mainSm.focusRight();
+      case Key.up:
+        return this.mainSm.focusUp();
+      case Key.down:
+        return this.mainSm.focusDown();
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Determine if Rive should handle keyboard input. If session state is `NotFocused` - no.
+   * DOM focus stays parked on the canvas after Rive releases focus internally, and that Tab
+   * has to reach the page rather than re-enter the tree.
+   *
+   * Otherwise, the event still has to belong to Rive:
+   * 1. If the current DOM focus is in Rive domain (canvas or semantic overlay)
+   * 2. If the target for the key input is for the semantic overlay, or the canvas
+   */
+  private shouldRiveHandleKeyEvent(event: KeyboardEvent): boolean {
+    if (this.focusSessionState === FocusSessionState.NotFocused) return false;
+
+    const inFocusDomain =
+      this.isInFocusDomain(document.activeElement) ||
+      this.isInOverlay(event.target);
+    const eventOnCanvas = event.target === this.canvas;
+    return inFocusDomain || this.canvasHasFocus || eventOnCanvas;
+  }
+
+  /** DOM that counts as inside Rive for focus: canvas, overlay subtree, text-input proxy. */
+  public isInFocusDomain(target: EventTarget | null): boolean {
+    if (target === this.canvas) return true;
+    if (this.inputProxy.owns(target)) return true;
+    return this.isInOverlay(target);
+  }
+
+  /** Overlay only (excludes the canvas) — the accessibility overlay subtree. */
+  private isInOverlay(target: EventTarget | null): boolean {
+    if (!(target instanceof Node)) return false;
+    return this.getOverlayElement?.()?.contains(target) ?? false;
+  }
+
+  private syncOverlayListener(): void {
+    const nextOverlayElement = this.getOverlayElement?.() ?? null;
+    if (nextOverlayElement === this.currentOverlayElement) return;
+
+    this.currentOverlayElement?.removeEventListener(
+      "focusin",
+      this.onOverlayFocusIn,
+    );
+    this.currentOverlayElement?.removeEventListener("keydown", this.onKeyDown);
+    this.currentOverlayElement?.removeEventListener("keyup", this.onKeyUp);
+    this.currentOverlayElement = nextOverlayElement;
+    this.currentOverlayElement?.addEventListener(
+      "focusin",
+      this.onOverlayFocusIn,
+    );
+    // Bubble phase, so a semantic widget's own key handler runs first and can claim
+    // the key via claimKeyEvent (see onKeyDown).
+    this.currentOverlayElement?.addEventListener("keydown", this.onKeyDown);
+    this.currentOverlayElement?.addEventListener("keyup", this.onKeyUp);
+  }
+
+  /**
+   * Whether the canvas currently matches :focus-visible — the browser's heuristic for keyboard-
+   * (vs pointer-) driven focus. For older browser versions that don't support this selector, return false
+   * so that we don't incorrectly assume pointer vs keyboard focus. Next tab would enter the focus tree in those edge cases.
+   */
+  private isKeyboardDrivenFocus(): boolean {
+    try {
+      return this.canvas.matches(":focus-visible");
+    } catch {
+      return false;
+    }
+  }
+
+  private cameFromBeforeCanvas(from: Node | null): boolean {
+    if (!from) return true;
+    const position = this.canvas.compareDocumentPosition(from);
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) return true;
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) return false;
+    return true;
+  }
+
+  public cleanup(): void {
+    this.canvas.removeEventListener("focus", this.onCanvasFocus);
+    this.canvas.removeEventListener("blur", this.onCanvasBlur);
+    this.canvas.removeEventListener("keydown", this.onKeyDown);
+    this.canvas.removeEventListener("keyup", this.onKeyUp);
+    this.claimedKeyCodes.clear();
+    this.focusDomainHost.removeEventListener("focusin", this.onFocusDomainHostFocusIn);
+    this.currentOverlayElement?.removeEventListener(
+      "focusin",
+      this.onOverlayFocusIn,
+    );
+    this.currentOverlayElement?.removeEventListener("keydown", this.onKeyDown);
+    this.currentOverlayElement?.removeEventListener("keyup", this.onKeyUp);
+    // Removing a focused element drops focus to <body> with no blur; park on the canvas.
+    if (this.inputProxy.hasDomFocus()) {
+      this.canvas.focus({ preventScroll: true });
+    }
+    this.inputProxy.cleanup();
+    this.textInputSessionActive = false;
+  }
+}

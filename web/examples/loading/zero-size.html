@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Resizing a zero-size canvas</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var canvas = document.getElementById("canvas");
+  if (ex.params.get("visible") !== "1") {
+    canvas.style.display = "none";
+  }
+  ex.start(function () {
+    ex.fetchBytes(ex.file).then(function (bytes) {
+      function open(options, onLoad) {
+        return rive.Rive.new(Object.assign({
+          buffer: bytes,
+          canvas: canvas,
+          autoplay: true,
+          autoBind: true,
+          onLoad: onLoad,
+          onLoadError: ex.fail,
+        }, options));
+      }
+      var first = open({}, function () {
+        first.cleanup();
+        var machine = ex.params.get("machine");
+        var second = open(machine ? { stateMachines: machine } : {}, function () {
+          try {
+            second.resizeDrawingSurfaceToCanvas();
+            twnoCheck.resize = "ok";
+          } catch (error) {
+            twnoCheck.resize = String(error);
+          }
+          twnoCheck.canvasSize = canvas.width + "x" + canvas.height;
+          twnoCheck.instance = second;
+          ex.setState("loaded", "resize " + twnoCheck.resize + ", canvas " + twnoCheck.canvasSize);
+        });
+      });
+    }).catch(ex.fail);
+  });
+</script>
+</body>
+</html>

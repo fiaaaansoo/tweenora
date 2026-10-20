@@ -1,0 +1,766 @@
+{
+ "entries": [
+  {
+   "id": "click_event-0",
+   "path": "runtime/tests/unit_tests/assets/click_event.riv",
+   "advance": 0,
+   "stateMachine": "sm-1",
+   "features": [
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "click_event-60",
+   "path": "runtime/tests/unit_tests/assets/click_event.riv",
+   "advance": 60,
+   "stateMachine": "sm-1",
+   "features": [
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "custom_property_enum-0",
+   "path": "runtime/tests/unit_tests/assets/custom_property_enum.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "custom_property_enum-60",
+   "path": "runtime/tests/unit_tests/assets/custom_property_enum.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_bind_font_test-0",
+   "path": "runtime/tests/unit_tests/assets/data_bind_font_test.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_bind_font_test-60",
+   "path": "runtime/tests/unit_tests/assets/data_bind_font_test.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_artboards_test-0",
+   "path": "runtime/tests/unit_tests/assets/data_binding_artboards_test.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_artboards_test-60",
+   "path": "runtime/tests/unit_tests/assets/data_binding_artboards_test.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_images_test-0",
+   "path": "runtime/tests/unit_tests/assets/data_binding_images_test.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "image",
+    "nested_artboard",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "data_binding_images_test-60",
+   "path": "runtime/tests/unit_tests/assets/data_binding_images_test.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "image",
+    "nested_artboard",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "data_binding_test-0",
+   "path": "runtime/tests/unit_tests/assets/data_binding_test.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_test-60",
+   "path": "runtime/tests/unit_tests/assets/data_binding_test.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_test_triggers-0",
+   "path": "runtime/tests/unit_tests/assets/data_binding_test_triggers.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_test_triggers-60",
+   "path": "runtime/tests/unit_tests/assets/data_binding_test_triggers.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "focusable_element-0",
+   "path": "runtime/tests/unit_tests/assets/focusable_element.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "focusable_element-60",
+   "path": "runtime/tests/unit_tests/assets/focusable_element.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "global_viewmodels_test-0",
+   "path": "runtime/tests/unit_tests/assets/global_viewmodels_test.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "global_viewmodels_test-60",
+   "path": "runtime/tests/unit_tests/assets/global_viewmodels_test.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "hosted_audio_file-0",
+   "path": "runtime/tests/unit_tests/assets/hosted_audio_file.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "audio",
+    "data_binding",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "hosted_audio_file-60",
+   "path": "runtime/tests/unit_tests/assets/hosted_audio_file.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "audio",
+    "data_binding",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "hosted_font_file-0",
+   "path": "runtime/tests/unit_tests/assets/hosted_font_file.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "hosted_font_file-60",
+   "path": "runtime/tests/unit_tests/assets/hosted_font_file.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "hosted_image_file-0",
+   "path": "runtime/tests/unit_tests/assets/hosted_image_file.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "image",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "hosted_image_file-60",
+   "path": "runtime/tests/unit_tests/assets/hosted_image_file.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "image",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "grid_2x2-0",
+   "path": "runtime/tests/unit_tests/assets/layout/grid_2x2.riv",
+   "advance": 0,
+   "features": [
+    "layout"
+   ]
+  },
+  {
+   "id": "grid_2x2-60",
+   "path": "runtime/tests/unit_tests/assets/layout/grid_2x2.riv",
+   "advance": 60,
+   "features": [
+    "layout"
+   ]
+  },
+  {
+   "id": "layout_aspect_ratio-0",
+   "path": "runtime/tests/unit_tests/assets/layout/layout_aspect_ratio.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "layout_aspect_ratio-60",
+   "path": "runtime/tests/unit_tests/assets/layout/layout_aspect_ratio.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "layout_center-0",
+   "path": "runtime/tests/unit_tests/assets/layout/layout_center.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "layout",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "layout_center-60",
+   "path": "runtime/tests/unit_tests/assets/layout/layout_center.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "layout",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "layout_scroll_vertical-0",
+   "path": "runtime/tests/unit_tests/assets/layout/layout_scroll_vertical.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "layout",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "layout_scroll_vertical-60",
+   "path": "runtime/tests/unit_tests/assets/layout/layout_scroll_vertical.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "layout",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "layout_text_match-0",
+   "path": "runtime/tests/unit_tests/assets/layout_text_match.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "layout_text_match-60",
+   "path": "runtime/tests/unit_tests/assets/layout_text_match.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "layoutstest_8-planets-grid-0",
+   "path": "runtime/tests/unit_tests/assets/layoutstest_8-planets-grid.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "layoutstest_8-planets-grid-60",
+   "path": "runtime/tests/unit_tests/assets/layoutstest_8-planets-grid.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "list_items-0",
+   "path": "runtime/tests/unit_tests/assets/list_items.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "list_items-60",
+   "path": "runtime/tests/unit_tests/assets/list_items.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "listener_input_values-0",
+   "path": "runtime/tests/unit_tests/assets/listener_input_values.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "listener_input_values-60",
+   "path": "runtime/tests/unit_tests/assets/listener_input_values.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "looping_timeline_events-0",
+   "path": "runtime/tests/unit_tests/assets/looping_timeline_events.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine"
+   ]
+  },
+  {
+   "id": "looping_timeline_events-60",
+   "path": "runtime/tests/unit_tests/assets/looping_timeline_events.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine"
+   ]
+  },
+  {
+   "id": "multiple_state_machines-0",
+   "path": "runtime/tests/unit_tests/assets/multiple_state_machines.riv",
+   "advance": 0,
+   "stateMachine": "four",
+   "features": [
+    "state_machine"
+   ]
+  },
+  {
+   "id": "multiple_state_machines-60",
+   "path": "runtime/tests/unit_tests/assets/multiple_state_machines.riv",
+   "advance": 60,
+   "stateMachine": "four",
+   "features": [
+    "state_machine"
+   ]
+  },
+  {
+   "id": "nested_events-0",
+   "path": "runtime/tests/unit_tests/assets/nested_events.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "nested_events-60",
+   "path": "runtime/tests/unit_tests/assets/nested_events.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "new_text-0",
+   "path": "runtime/tests/unit_tests/assets/new_text.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "new_text-60",
+   "path": "runtime/tests/unit_tests/assets/new_text.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "pointer_events-0",
+   "path": "runtime/tests/unit_tests/assets/pointer_events.riv",
+   "advance": 0,
+   "stateMachine": "sm-1",
+   "features": [
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "pointer_events-60",
+   "path": "runtime/tests/unit_tests/assets/pointer_events.riv",
+   "advance": 60,
+   "stateMachine": "sm-1",
+   "features": [
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "runtime_nested_text_runs-0",
+   "path": "runtime/tests/unit_tests/assets/runtime_nested_text_runs.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "nested_artboard",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "runtime_nested_text_runs-60",
+   "path": "runtime/tests/unit_tests/assets/runtime_nested_text_runs.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "nested_artboard",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "script_inputs_test_1-0",
+   "path": "runtime/tests/unit_tests/assets/script_inputs_test_1.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "scripting",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "script_inputs_test_1-60",
+   "path": "runtime/tests/unit_tests/assets/script_inputs_test_1.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "scripting",
+    "state_machine"
+   ]
+  },
+  {
+   "id": "scripting_linear_animation-0",
+   "path": "runtime/tests/unit_tests/assets/scripting_linear_animation.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "scripting",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "scripting_linear_animation-60",
+   "path": "runtime/tests/unit_tests/assets/scripting_linear_animation.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "scripting",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_lists-0",
+   "path": "runtime/tests/unit_tests/assets/semantic/data_binding_lists.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "data_binding_lists-60",
+   "path": "runtime/tests/unit_tests/assets/semantic/data_binding_lists.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "nested_artboard",
+    "state_machine",
+    "text",
+    "vector"
+   ]
+  },
+  {
+   "id": "sound-0",
+   "path": "runtime/tests/unit_tests/assets/sound.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "audio",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "sound-60",
+   "path": "runtime/tests/unit_tests/assets/sound.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "audio",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "sound2-0",
+   "path": "runtime/tests/unit_tests/assets/sound2.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "audio",
+    "nested_artboard",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "sound2-60",
+   "path": "runtime/tests/unit_tests/assets/sound2.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "audio",
+    "nested_artboard",
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "state_machine_triggers-0",
+   "path": "runtime/tests/unit_tests/assets/state_machine_triggers.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "state_machine_triggers-60",
+   "path": "runtime/tests/unit_tests/assets/state_machine_triggers.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "state_machine",
+    "vector"
+   ]
+  },
+  {
+   "id": "text_fit_test-0",
+   "path": "runtime/tests/unit_tests/assets/text_fit_test.riv",
+   "advance": 0,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "text_fit_test-60",
+   "path": "runtime/tests/unit_tests/assets/text_fit_test.riv",
+   "advance": 60,
+   "stateMachine": "State Machine 1",
+   "features": [
+    "data_binding",
+    "layout",
+    "state_machine",
+    "text"
+   ]
+  },
+  {
+   "id": "two_artboards-0",
+   "path": "runtime/tests/unit_tests/assets/two_artboards.riv",
+   "advance": 0,
+   "features": [
+    "vector"
+   ]
+  },
+  {
+   "id": "two_artboards-60",
+   "path": "runtime/tests/unit_tests/assets/two_artboards.riv",
+   "advance": 60,
+   "features": [
+    "vector"
+   ]
+  }
+ ]
+}

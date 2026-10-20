@@ -1,0 +1,28 @@
+name: File takedown request
+description: You hold rights in a file in the repository and are asking for it to be removed (see NOTICE).
+labels: ["takedown"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is public: do not attach an ID document or private contact details. Tweenora replies within 7 days and removes the file
+        from the repository if the request is well founded. The full procedure is in `NOTICE`, section "Test files".
+  - type: input
+    id: chemin
+    attributes:
+      label: Path of the file in the repository
+      description: For example `runtime/tests/unit_tests/assets/example.riv`. One file per line if there are several.
+    validations:
+      required: true
+  - type: textarea
+    id: droits
+    attributes:
+      label: What establishes your rights
+      description: Rights holder, work concerned, link to a public source of the work or its license.
+    validations:
+      required: true
+  - type: textarea
+    id: souhait
+    attributes:
+      label: Details (optional)
+      description: For example whether you also ask for removal from the history or would like a private exchange.

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Animation and state machine examples</title>
+</head>
+<body>
+<h1>Animations and state machines</h1>
+<p>Prepare the assets with <code>python web/examples/prepare_assets.py</code>; each page accepts a
+<code>.twno</code> or a <code>.riv</code> in <code>?file=</code>.</p>
+<ul>
+  <li><a href="playback.html?file=/assets/looping_timeline_events.twno&amp;animations=EventAnimation">playback.html</a>: <code>play</code>, <code>pause</code>, <code>stop</code>, <code>scrub</code>, <code>reset</code>, events <code>Play</code>, <code>Pause</code>, <code>Stop</code>, <code>Loop</code>, <code>Advance</code>, <code>StateChange</code>; parameters <code>&amp;stateMachine=</code>, <code>&amp;animations=</code>, <code>&amp;artboard=</code>.</li>
+  <li><a href="inputs.html?file=/assets/click_event.twno&amp;artboard=art-2&amp;stateMachine=sm-1">inputs.html</a>: boolean (<code>click_event</code>), number (<code>sound</code>) and trigger (<code>state_machine_triggers</code>) inputs, emitted state names.</li>
+  <li><a href="events.html?file=/assets/looping_timeline_events.twno&amp;stateMachine=State%20Machine%201">events.html</a>: <code>EventType.RiveEvent</code>; <code>nested_events</code> with <code>&amp;autobind=1&amp;size=200</code>.</li>
+  <li><a href="pointer.html?file=/assets/pointer_events.twno&amp;stateMachine=sm-1&amp;size=500">pointer.html</a>: mouse to listeners, <code>setupRiveListeners</code>, <code>removeRiveListeners</code>, <code>&amp;listeners=off</code>.</li>
+</ul>
+</body>
+</html>

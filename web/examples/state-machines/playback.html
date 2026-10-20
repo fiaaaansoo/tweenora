@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Animation playback</title>
+</head>
+<body>
+<div class="controls">
+  <button id="play" type="button">play</button>
+  <button id="pause" type="button">pause</button>
+  <button id="stop" type="button">stop</button>
+  <button id="reset" type="button">reset</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var types = [
+    rive.EventType.Load,
+    rive.EventType.Play,
+    rive.EventType.Pause,
+    rive.EventType.Stop,
+    rive.EventType.Loop,
+    rive.EventType.Advance,
+    rive.EventType.Draw,
+    rive.EventType.StateChange,
+  ];
+  var counts = {};
+  var callbackCounts = {};
+  var lastLoop = null;
+  function bump(table, name) { table[name] = (table[name] || 0) + 1; }
+  function split(value) { return value ? value.split(",") : undefined; }
+
+  ex.start(function () {
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || undefined,
+      animations: split(ex.params.get("animations")),
+      stateMachines: split(ex.params.get("stateMachines")),
+      autoplay: ex.params.get("autoplay") !== "0",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onPlay: function () { bump(callbackCounts, "play"); },
+      onPause: function () { bump(callbackCounts, "pause"); },
+      onStop: function () { bump(callbackCounts, "stop"); },
+      onLoop: function (event) {
+        bump(callbackCounts, "loop");
+        lastLoop = { animation: event.data.animation, type: event.data.type };
+      },
+      onStateChange: function () { bump(callbackCounts, "statechange"); },
+      onAdvance: ex.countFrames,
+    });
+    types.forEach(function (type) {
+      instance.on(type, function (event) { bump(counts, event.type); });
+    });
+
+    twnoCheck.instance = instance;
+    twnoCheck.counts = counts;
+    twnoCheck.callbackCounts = callbackCounts;
+    twnoCheck.loopTypes = Object.values(rive.LoopType);
+    twnoCheck.lastLoop = function () { return lastLoop; };
+    twnoCheck.status = function () {
+      var status = {
+        animationNames: instance.animationNames,
+        stateMachineNames: instance.stateMachineNames,
+        playingAnimationNames: instance.playingAnimationNames,
+        pausedAnimationNames: instance.pausedAnimationNames,
+        playingStateMachineNames: instance.playingStateMachineNames,
+        pausedStateMachineNames: instance.pausedStateMachineNames,
+        isPlaying: instance.isPlaying,
+        isPaused: instance.isPaused,
+        isStopped: instance.isStopped,
+      };
+      document.getElementById("info").textContent = JSON.stringify(status, null, 2);
+      return status;
+    };
+    twnoCheck.play = function (names) { instance.play(names); };
+    twnoCheck.pause = function (names) { instance.pause(names); };
+    twnoCheck.stop = function (names) { instance.stop(names); };
+    twnoCheck.scrub = function (names, seconds) { instance.scrub(names, seconds); };
+    twnoCheck.reset = function (params) { instance.reset(params); };
+    twnoCheck.loadWith = function (params) {
+      instance.load(Object.assign({ src: ex.file }, params));
+    };
+    document.getElementById("play").addEventListener("click", function () { instance.play(); });
+    document.getElementById("pause").addEventListener("click", function () { instance.pause(); });
+    document.getElementById("stop").addEventListener("click", function () { instance.stop(); });
+    document.getElementById("reset").addEventListener("click", function () { instance.reset({ autoplay: true }); });
+  });
+</script>
+</body>
+</html>

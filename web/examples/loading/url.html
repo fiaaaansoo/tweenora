@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Loading from a URL</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  ex.start(function () {
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      autoplay: ex.params.get("autoplay") !== "0",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded " + ex.file);
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+    twnoCheck.instance = instance;
+  });
+</script>
+</body>
+</html>

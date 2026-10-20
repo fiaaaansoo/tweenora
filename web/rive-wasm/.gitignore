@@ -1,0 +1,65 @@
+# OSX stuff
+*.DS_Store
+
+#VSCode stuff
+.vscode
+
+# Node stuff
+node_modules
+
+# parcel stuff
+.parcel-cache
+
+# build stuff
+*/build
+/wasm/dependencies
+/wasm/Makefile
+/wasm/bin
+/wasm/rive.make
+/wasm/publish/rive.pure.min.mjs
+/wasm/publish/rive.pure.min.js
+/wasm/publish/rive.min.mjs
+/wasm/publish/rive.min.js
+/wasm/publish/rive.lean.min.mjs
+/wasm/publish/rive.lean.min.js
+/js/dist/rive.lean.dev.js.map
+/js/dist/rive.lean.dev.js
+/wasm/publish/rive.mjs
+/wasm/publish/rive.wasm
+/wasm/publish/rive.pure.mjs
+/wasm/publish/rive.pure.js
+/wasm/publish/rive.js
+/js/src/rive.mjs
+/js/src/rive_canvas.js
+/js/dist/rive_canvas.js
+/js/dist/rive_canvas.d.ts
+/js/src/rive_canvas.d.ts
+/js/dist/rive.wasm
+/js/dist/rive.min.js.map
+/js/dist/rive.min.js
+/js/dist/rive.dev.js.map
+/js/dist/rive.dev.js
+/js/dist/rive.d.ts
+/js/dist
+/build
+.cache
+/js/npm/canvas_advanced_single/canvas_advanced_single.mjs
+/js/npm/canvas_advanced/canvas_advanced.mjs
+/js/npm/canvas_advanced_lite/canvas_advanced.mjs
+/js/npm/**/rive.wasm
+/js/npm/**/rive_fallback.wasm
+/js/npm/**/rive.js
+/js/npm/**/rive.js.map
+/js/npm/**/rive.d.ts
+/js/npm/**/rive_advanced.mjs.d.ts
+/js/npm/**/utils/
+/js/npm/**/semantics/
+/js/npm/**/runtimeLoader.d.ts
+/js/npm/webgl_advanced_single/webgl_advanced_single.mjs
+/js/npm/webgl_advanced/webgl_advanced.mjs
+/js/npm/webgl2_advanced/webgl2_advanced.mjs
+/js/examples/**/package-lock.json
+/wasm/examples/**/package-lock.json
+/wasm/examples/**/docs
+/wasm/examples/**/dist
+/wasm/examples/**/package-lock.json

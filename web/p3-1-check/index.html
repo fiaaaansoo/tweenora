@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Tweenora, WASM check</title>
+<style>
+html, body { width: 100%; height: 100%; margin: 0; background: #000; }
+canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  var params = new URLSearchParams(location.search);
+  var fileUrl = params.get("file");
+  var sceneName = "/scene" + (fileUrl && /\.twno(?:[?#].*)?$/i.test(fileUrl) ? ".twno" : ".riv");
+  var baseTitle = document.title;
+  window.twnoCheck = { state: "loading", messages: [] };
+
+  function setState(state, text) {
+    if (window.twnoCheck.state === "error" || window.twnoCheck.state === "aborted") { return; }
+    window.twnoCheck.state = state;
+    document.title = baseTitle + ": " + (text || state);
+  }
+
+  function record(text) {
+    window.twnoCheck.messages.push(text);
+    if (/^Drawing \d+ copies of /.test(text)) { setState("drawing", "drawing " + sceneName); }
+    if (/Bad header|failed to fetch/i.test(text)) { setState("error", text); }
+  }
+
+  var Module = {
+    canvas: document.getElementById("canvas"),
+    print: function (text) { record(text); console.log(text); },
+    printErr: function (text) { record(text); console.error(text); },
+    onAbort: function (reason) { setState("aborted", "aborted: " + reason); },
+    preRun: [function () {
+      if (!Module.FS) {
+        setState("error", "Module.FS not exported: link player with EMCC_CFLAGS");
+        return;
+      }
+      Module.FS.writeFile(sceneName, window.twnoCheck.bytes);
+      history.replaceState(null, "", location.pathname + location.search + "#-b%20gl%20" + sceneName);
+      setState("loaded", "loaded " + sceneName);
+    }],
+  };
+
+  window.addEventListener("error", function (event) { setState("error", String(event.message)); });
+
+  function loadPlayer() {
+    var script = document.createElement("script");
+    script.src = "player.js";
+    script.onerror = function () { setState("error", "player.js not found"); };
+    document.body.appendChild(script);
+  }
+
+  if (!fileUrl) {
+    setState("error", "missing ?file=<url> parameter");
+  } else {
+    fetch(fileUrl)
+      .then(function (response) {
+        if (!response.ok) { throw new Error(fileUrl + ": HTTP " + response.status); }
+        return response.arrayBuffer();
+      })
+      .then(function (buffer) {
+        window.twnoCheck.bytes = new Uint8Array(buffer);
+        loadPlayer();
+      })
+      .catch(function (error) { setState("error", String(error)); });
+  }
+</script>
+</body>
+</html>

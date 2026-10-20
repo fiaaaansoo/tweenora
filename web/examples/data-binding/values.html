@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>View model values</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var observed = {};
+
+  ex.start(function () {
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || undefined,
+      autoplay: true,
+      autoBind: ex.params.get("autobind") !== "0",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    function vmi() { return instance.viewModelInstance; }
+    var accessors = {
+      number: function (path) { return vmi().number(path); },
+      string: function (path) { return vmi().string(path); },
+      boolean: function (path) { return vmi().boolean(path); },
+      color: function (path) { return vmi().color(path); },
+      trigger: function (path) { return vmi().trigger(path); },
+      enum: function (path) { return vmi().enum(path); },
+    };
+    function typed(kind, path) { return accessors[kind](path); }
+
+    twnoCheck.instance = instance;
+    twnoCheck.observed = observed;
+    twnoCheck.set = function (kind, path, value) {
+      var property = typed(kind, path);
+      property.value = value;
+      return property.value;
+    };
+    twnoCheck.trigger = function (path) { typed("trigger", path).trigger(); };
+    var watched = {};
+    twnoCheck.observe = function (kind, path) {
+      var key = kind + ":" + path;
+      observed[key] = [];
+      var property = typed(kind, path);
+      var callback = function () {
+        observed[key].push(kind === "trigger" ? "fired" : property.value);
+      };
+      property.on(callback);
+      watched[key] = { property: property, callback: callback };
+      return property.name;
+    };
+    twnoCheck.unobserve = function (kind, path) {
+      var entry = watched[kind + ":" + path];
+      entry.property.off(entry.callback);
+    };
+    twnoCheck.nameOf = function (kind, path) { return typed(kind, path).name; };
+    twnoCheck.color = function (path, mode, a, b, c, d) {
+      var property = typed("color", path);
+      if (mode === "rgb") { property.rgb(a, b, c); }
+      else if (mode === "rgba") { property.rgba(a, b, c, d); }
+      else if (mode === "argb") { property.argb(a, b, c, d); }
+      else if (mode === "alpha") { property.alpha(a); }
+      else if (mode === "opacity") { property.opacity(a); }
+      return property.value;
+    };
+    twnoCheck.enumValues = function (path) {
+      var property = typed("enum", path);
+      return { value: property.value, index: property.valueIndex, values: property.values };
+    };
+    twnoCheck.setEnumIndex = function (path, index) {
+      var property = typed("enum", path);
+      property.valueIndex = index;
+      return property.value;
+    };
+  });
+</script>
+</body>
+</html>

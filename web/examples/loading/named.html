@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Named artboard and state machine</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  ex.start(function () {
+    var options = {
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      autoplay: ex.params.get("autoplay") !== "0",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        twnoCheck.summary = {
+          activeArtboard: instance.activeArtboard,
+          animationNames: instance.animationNames,
+          stateMachineNames: instance.stateMachineNames,
+          contents: instance.contents,
+          source: instance.source,
+          bounds: instance.bounds,
+          namedArtboard: Boolean(instance.getArtboard(instance.activeArtboard)),
+        };
+        twnoCheck.artboardNames = instance.contents.artboards.map(function (artboard) { return artboard.name; });
+        document.getElementById("info").textContent = JSON.stringify(twnoCheck.summary, null, 2);
+        ex.setState("loaded", "artboard " + instance.activeArtboard);
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    };
+    if (ex.params.get("artboard")) { options.artboard = ex.params.get("artboard"); }
+    if (ex.params.get("stateMachine")) { options.stateMachine = ex.params.get("stateMachine"); }
+    var instance = new rive.Rive(options);
+    twnoCheck.instance = instance;
+  });
+</script>
+</body>
+</html>

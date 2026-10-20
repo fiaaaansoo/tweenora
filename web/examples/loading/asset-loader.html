@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>External assets (assetLoader)</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var seen = [];
+  var via = ex.params.get("via") || "image";
+
+  function makeImageBytes() {
+    var source = document.createElement("canvas");
+    source.width = 128;
+    source.height = 128;
+    var context = source.getContext("2d");
+    var gradient = context.createLinearGradient(0, 0, 128, 128);
+    gradient.addColorStop(0, "#ff5a36");
+    gradient.addColorStop(1, "#2f6bff");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 128, 128);
+    return new Promise(function (resolve) {
+      source.toBlob(function (blob) { resolve(blob.arrayBuffer()); }, "image/png");
+    });
+  }
+
+  ex.start(function () {
+    var instance;
+
+    function assetLoader(asset, bytes) {
+      seen.push({
+        name: asset.name,
+        fileExtension: asset.fileExtension,
+        uniqueFilename: asset.uniqueFilename,
+        cdnUuid: asset.cdnUuid,
+        isImage: asset.isImage,
+        nativeAsset: typeof asset.nativeAsset,
+        embeddedBytes: bytes.length,
+      });
+      if (!asset.isImage || bytes.length > 0) { return false; }
+      makeImageBytes()
+        .then(function (data) {
+          var png = new Uint8Array(data);
+          if (via === "decode") {
+            asset.decode(png);
+            return null;
+          }
+          return rive.decodeImage(png).then(function (image) {
+            twnoCheck.imageHasNative = Boolean(image.nativeImage);
+            asset.setRenderImage(image);
+            image.unref();
+          });
+        })
+        .then(function () { twnoCheck.assetApplied = true; })
+        .catch(ex.fail);
+      return true;
+    }
+
+    function onLoaded() {
+      instance.resizeDrawingSurfaceToCanvas();
+      twnoCheck.assets = seen;
+      document.getElementById("info").textContent = JSON.stringify(seen, null, 2);
+      ex.setState("loaded", seen.length + " asset(s) seen");
+    }
+
+    function open(source) {
+      instance = new rive.Rive(Object.assign({
+        canvas: document.getElementById("canvas"),
+        autoplay: true,
+        enableRiveAssetCDN: false,
+        assetLoader: assetLoader,
+        onLoad: onLoaded,
+        onLoadError: ex.fail,
+        onAdvance: ex.countFrames,
+      }, source));
+      twnoCheck.instance = instance;
+    }
+
+    if (ex.params.get("host") === "file") {
+      var file = new rive.RiveFile({
+        src: ex.file,
+        enableRiveAssetCDN: false,
+        assetLoader: assetLoader,
+        onLoad: function () { open({ riveFile: file }); },
+        onLoadError: ex.fail,
+      });
+      file.init();
+      twnoCheck.file = file;
+    } else {
+      open({ src: ex.file });
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Diagnostics and render control</title>
+</head>
+<body>
+<div class="controls">
+  <button id="stop" type="button">stopRendering</button>
+  <button id="start" type="button">startRendering</button>
+  <button id="fps" type="button">FPS counter</button>
+  <button id="draw" type="button">drawFrame</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  ex.start(function () {
+    rive.Rive.suppressDeprecationWarnings = [
+      rive.DeprecationKeys.defaultStateMachine,
+      rive.DeprecationKeys.legacyUnsubscribe,
+    ];
+    var fpsValues = [];
+    var pauseCalls = 0;
+    function onPause() { pauseCalls += 1; }
+
+    var instance = new rive.Rive({
+      src: ex.file,
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || undefined,
+      canvas: document.getElementById("canvas"),
+      autoplay: true,
+      drawingOptions: ex.params.get("drawing") === "changed"
+        ? rive.DrawOptimizationOptions.DrawOnChanged
+        : rive.DrawOptimizationOptions.AlwaysDraw,
+      useOffscreenRenderer: ex.params.get("offscreen") === "1",
+      enablePerfMarks: ex.params.get("perf") === "1",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+        instance.on(rive.EventType.Pause, onPause);
+        instance.off(rive.EventType.Pause, onPause);
+        instance.on(rive.EventType.Pause, onPause);
+        instance.unsubscribe(rive.EventType.Pause, onPause);
+        instance.on(rive.EventType.Pause, onPause);
+        instance.unsubscribeAll(rive.EventType.Pause);
+        twnoCheck.listenersAfterUnsubscribe = pauseCalls;
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    twnoCheck.instance = instance;
+    twnoCheck.suppressed = rive.Rive.suppressDeprecationWarnings;
+    twnoCheck.deprecationKeys = Object.keys(rive.DeprecationKeys);
+    twnoCheck.enableFps = function () {
+      instance.enableFPSCounter(function (fps) { fpsValues.push(fps); });
+    };
+    twnoCheck.disableFps = function () { instance.disableFPSCounter(); };
+    twnoCheck.fpsValues = fpsValues;
+    twnoCheck.report = function () {
+      var report = {
+        source: instance.source,
+        bounds: instance.bounds,
+        fps: instance.fps,
+        frameTime: instance.frameTime,
+        frameCount: instance.frameCount,
+        durations: instance.durations.length,
+        frameTimes: instance.frameTimes.length,
+        pauseCallsAfterUnsubscribe: pauseCalls,
+        fpsSamples: fpsValues.length,
+      };
+      document.getElementById("info").textContent = JSON.stringify(report, null, 2);
+      return report;
+    };
+    document.getElementById("stop").addEventListener("click", function () { instance.stopRendering(); });
+    document.getElementById("start").addEventListener("click", function () { instance.startRendering(); });
+    twnoCheck.drawFrame = function () { instance.drawFrame(); };
+    document.getElementById("draw").addEventListener("click", twnoCheck.drawFrame);
+    document.getElementById("fps").addEventListener("click", twnoCheck.enableFps);
+  });
+</script>
+</body>
+</html>

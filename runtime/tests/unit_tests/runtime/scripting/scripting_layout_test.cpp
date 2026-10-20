@@ -1,0 +1,541 @@
+/*
+ * Copyright 2025 Rive
+ */
+
+#include "catch.hpp"
+#include "scripting_test_utilities.hpp"
+#include "rive/animation/state_machine_instance.hpp"
+#include "rive/lua/rive_lua_libs.hpp"
+#include "rive/scripted/scripted_layout.hpp"
+#include "rive/layout/layout_enums.hpp"
+#include "rive/math/vec2d.hpp"
+#include "rive/viewmodel/viewmodel_instance_number.hpp"
+#include "rive_file_reader.hpp"
+#include "utils/no_op_renderer.hpp"
+
+using namespace rive;
+
+TEST_CASE("scripted layout measure function can be called", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local measureCallCount = 0
+
+function init(self: MyLayout, context: Context): boolean
+  return true
+end
+
+function measure(self: MyLayout): Vector
+  measureCallCount = measureCallCount + 1
+  return Vector.xy(200, 150)
+end
+
+function getMeasureCallCount(): number
+  return measureCallCount
+end
+
+return function(): Layout<MyLayout>
+  return {
+    init = init,
+    measure = measure,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    auto top = lua_gettop(L);
+
+    // Test measure function
+    {
+        lua_getglobal(L, "measure");
+        lua_pushvalue(L, -2); // Push self
+        CHECK(lua_pcall(L, 1, 1, 0) == LUA_OK);
+
+        // Verify return value is a Vec2D
+        CHECK(lua_type(L, -1) == LUA_TVECTOR);
+        auto size = lua_tovec2d(L, -1);
+        CHECK(size->x == 200.0f);
+        CHECK(size->y == 150.0f);
+
+        lua_pop(L, 1); // Pop result
+        CHECK(top == lua_gettop(L));
+    }
+
+    // Verify measure was called
+    {
+        lua_getglobal(L, "getMeasureCallCount");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_tonumber(L, -1) == 1.0);
+        lua_pop(L, 1);
+        CHECK(top == lua_gettop(L));
+    }
+}
+
+TEST_CASE("scripted layout resize function can be called", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local resizeCallCount = 0
+local lastResizeSize: Vector?
+
+function init(self: MyLayout, context: Context): boolean
+  return true
+end
+
+function resize(self: MyLayout, size: Vector)
+  resizeCallCount = resizeCallCount + 1
+  lastResizeSize = size
+end
+
+function getResizeCallCount(): number
+  return resizeCallCount
+end
+
+function getLastResizeSize(): Vector?
+  return lastResizeSize
+end
+
+return function(): Layout<MyLayout>
+  return {
+    init = init,
+    resize = resize,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    auto top = lua_gettop(L);
+
+    // Test resize function
+    {
+        lua_getglobal(L, "resize");
+        lua_pushvalue(L, -2); // Push self
+        Vec2D testSize(300.0f, 200.0f);
+        lua_pushvec2d(L, testSize);
+        CHECK(lua_pcall(L, 2, 0, 0) == LUA_OK);
+        CHECK(top == lua_gettop(L));
+    }
+
+    // Verify resize was called
+    {
+        lua_getglobal(L, "getResizeCallCount");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_tonumber(L, -1) == 1.0);
+        lua_pop(L, 1);
+
+        lua_getglobal(L, "getLastResizeSize");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_type(L, -1) == LUA_TVECTOR);
+        auto size = lua_tovec2d(L, -1);
+        CHECK(size->x == 300.0f);
+        CHECK(size->y == 200.0f);
+        lua_pop(L, 1);
+        CHECK(top == lua_gettop(L));
+    }
+}
+
+TEST_CASE("layout resize dispatch carries the display scale", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local lastSize: Vector?
+local lastScale: number?
+
+function resize(self: MyLayout, size: Vector, scale: number)
+  lastSize = size
+  lastScale = scale
+end
+
+selfTable = { resize = resize }
+
+function getLastSize(): Vector?
+  return lastSize
+end
+
+function getLastScale(): number?
+  return lastScale
+end
+
+return function(): Layout<MyLayout>
+  return {
+    resize = resize,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    lua_getglobal(L, "selfTable");
+    int selfRef = lua_ref(L, -1);
+    lua_pop(L, 1);
+
+    vm.vm()->displayScale(2.5f);
+    vm.vm()->callLayoutResize(nullptr, selfRef, Vec2D(300.0f, 200.0f));
+
+    auto top = lua_gettop(L);
+    lua_getglobal(L, "getLastSize");
+    CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+    CHECK(lua_type(L, -1) == LUA_TVECTOR);
+    auto size = lua_tovec2d(L, -1);
+    CHECK(size->x == 300.0f);
+    CHECK(size->y == 200.0f);
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "getLastScale");
+    CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+    CHECK(lua_tonumber(L, -1) == 2.5);
+    lua_pop(L, 1);
+    CHECK(top == lua_gettop(L));
+}
+
+namespace
+{
+// Test seam: ScriptedObject's backend and self ref are protected.
+class TestScriptedLayout : public ScriptedLayout
+{
+public:
+    void bind(ScriptBackend* vm, int selfRef)
+    {
+        m_vm = vm;
+        m_self = selfRef;
+        // Only the resizes bit matters here; the wire value is the
+        // serializedImplementedMethods bit ScriptAsset writes.
+        implementedMethods(1 << 12);
+    }
+};
+} // namespace
+
+TEST_CASE("display scale changes re-announce the layout size", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local resizeCallCount = 0
+local lastSize: Vector?
+local lastScale: number?
+
+function resize(self: MyLayout, size: Vector, scale: number)
+  resizeCallCount = resizeCallCount + 1
+  lastSize = size
+  lastScale = scale
+end
+
+selfTable = { resize = resize }
+
+function getResizeCallCount(): number
+  return resizeCallCount
+end
+
+function getLastScale(): number?
+  return lastScale
+end
+
+function getLastSize(): Vector?
+  return lastSize
+end
+)",
+        0);
+    lua_State* L = vm.state();
+    lua_getglobal(L, "selfTable");
+    int selfRef = lua_ref(L, -1);
+    lua_pop(L, 1);
+
+    TestScriptedLayout layout;
+    layout.bind(vm.vm(), selfRef);
+    vm.vm()->registerScriptedObject(&layout);
+
+    auto callCount = [&]() -> double {
+        lua_getglobal(L, "getResizeCallCount");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        double count = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        return count;
+    };
+
+    // Before controlSize establishes a size, a scale change must stay
+    // silent: the layout has nothing valid to announce.
+    vm.vm()->displayScale(3.0f);
+    CHECK(callCount() == 0.0);
+
+    layout.controlSize(Vec2D(240.0f, 120.0f),
+                       LayoutScaleType::fixed,
+                       LayoutScaleType::fixed,
+                       LayoutDirection::inherit);
+    CHECK(callCount() == 1.0);
+
+    // A later scale change re-announces the same size with the new scale.
+    vm.vm()->displayScale(4.0f);
+    CHECK(callCount() == 2.0);
+    lua_getglobal(L, "getLastScale");
+    CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+    CHECK(lua_tonumber(L, -1) == 4.0);
+    lua_pop(L, 1);
+    lua_getglobal(L, "getLastSize");
+    CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+    CHECK(lua_type(L, -1) == LUA_TVECTOR);
+    auto size = lua_tovec2d(L, -1);
+    CHECK(size->x == 240.0f);
+    CHECK(size->y == 120.0f);
+    lua_pop(L, 1);
+
+    // An unchanged value stays silent.
+    vm.vm()->displayScale(4.0f);
+    CHECK(callCount() == 2.0);
+
+    vm.vm()->unregisterScriptedObject(&layout);
+    lua_unref(L, selfRef);
+}
+
+TEST_CASE("two parameter resize scripts ignore the scale argument",
+          "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local resizeCallCount = 0
+
+function resize(self: MyLayout, size: Vector)
+  resizeCallCount = resizeCallCount + 1
+end
+
+selfTable = { resize = resize }
+
+function getResizeCallCount(): number
+  return resizeCallCount
+end
+
+return function(): Layout<MyLayout>
+  return {
+    resize = resize,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    lua_getglobal(L, "selfTable");
+    int selfRef = lua_ref(L, -1);
+    lua_pop(L, 1);
+
+    vm.vm()->callLayoutResize(nullptr, selfRef, Vec2D(120.0f, 80.0f));
+
+    auto top = lua_gettop(L);
+    lua_getglobal(L, "getResizeCallCount");
+    CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+    CHECK(lua_tonumber(L, -1) == 1.0);
+    lua_pop(L, 1);
+    CHECK(top == lua_gettop(L));
+}
+
+TEST_CASE("scripted layout advance function can be called", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local advanceCallCount = 0
+local totalElapsed = 0.0
+
+function init(self: MyLayout, context: Context): boolean
+  return true
+end
+
+function advance(self: MyLayout, seconds: number): boolean
+  advanceCallCount = advanceCallCount + 1
+  totalElapsed = totalElapsed + seconds
+  return true
+end
+
+function getAdvanceCallCount(): number
+  return advanceCallCount
+end
+
+function getTotalElapsed(): number
+  return totalElapsed
+end
+
+return function(): Layout<MyLayout>
+  return {
+    init = init,
+    advance = advance,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    auto top = lua_gettop(L);
+
+    // Test advance function
+    {
+        lua_getglobal(L, "advance");
+        lua_pushvalue(L, -2);     // Push self
+        lua_pushnumber(L, 0.033); // ~30fps
+        CHECK(lua_pcall(L, 2, 1, 0) == LUA_OK);
+        CHECK(lua_toboolean(L, -1) == 1);
+        lua_pop(L, 1); // Pop result
+        CHECK(top == lua_gettop(L));
+    }
+
+    // Verify advance was called
+    {
+        lua_getglobal(L, "getAdvanceCallCount");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_tonumber(L, -1) == 1.0);
+        lua_pop(L, 1);
+
+        lua_getglobal(L, "getTotalElapsed");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_tonumber(L, -1) == Approx(0.033));
+        lua_pop(L, 1);
+        CHECK(top == lua_gettop(L));
+    }
+}
+
+TEST_CASE("scripted layout update function can be called", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local updateCallCount = 0
+
+function init(self: MyLayout, context: Context): boolean
+  return true
+end
+
+function update(self: MyLayout)
+  updateCallCount = updateCallCount + 1
+end
+
+function getUpdateCallCount(): number
+  return updateCallCount
+end
+
+return function(): Layout<MyLayout>
+  return {
+    init = init,
+    update = update,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    auto top = lua_gettop(L);
+
+    // Test update function
+    {
+        lua_getglobal(L, "update");
+        lua_pushvalue(L, -2); // Push self
+        CHECK(lua_pcall(L, 1, 0, 0) == LUA_OK);
+        CHECK(top == lua_gettop(L));
+    }
+
+    // Verify update was called
+    {
+        lua_getglobal(L, "getUpdateCallCount");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_tonumber(L, -1) == 1.0);
+        lua_pop(L, 1);
+        CHECK(top == lua_gettop(L));
+    }
+}
+
+TEST_CASE("scripted layout draw function can be called", "[scripting]")
+{
+    ScriptingTest vm(
+        R"(type MyLayout = {}
+local drawCallCount = 0
+
+function init(self: MyLayout, context: Context): boolean
+  return true
+end
+
+function draw(self: MyLayout, renderer: Renderer)
+  drawCallCount = drawCallCount + 1
+end
+
+function getDrawCallCount(): number
+  return drawCallCount
+end
+
+return function(): Layout<MyLayout>
+  return {
+    init = init,
+    draw = draw,
+  }
+end
+)");
+    lua_State* L = vm.state();
+    auto top = lua_gettop(L);
+
+    // Test draw function
+    {
+        lua_getglobal(L, "draw");
+        lua_pushvalue(L, -2); // Push self
+
+        // Create a renderer
+        NoOpRenderer renderer;
+        auto scriptedRenderer = lua_newrive<ScriptedRenderer>(L, &renderer);
+
+        CHECK(lua_pcall(L, 2, 0, 0) == LUA_OK);
+        CHECK(scriptedRenderer->end());
+        CHECK(top == lua_gettop(L));
+    }
+
+    // Verify draw was called
+    {
+        lua_getglobal(L, "getDrawCallCount");
+        CHECK(lua_pcall(L, 0, 1, 0) == LUA_OK);
+        CHECK(lua_tonumber(L, -1) == 1.0);
+        lua_pop(L, 1);
+        CHECK(top == lua_gettop(L));
+    }
+}
+
+TEST_CASE("file display scale reaches its scripting vm", "[scripting]")
+{
+    rive::SerializingFactory silver;
+    auto file = ReadRiveFile("assets/script_layout_test.riv", &silver);
+    REQUIRE(file->scriptingVM() != nullptr);
+    CHECK(file->scriptingVM()->displayScale() == 1.0f);
+    file->displayScale(2.0f);
+    CHECK(file->scriptingVM()->displayScale() == 2.0f);
+}
+
+TEST_CASE("layout grid script", "[silver]")
+{
+    rive::SerializingFactory silver;
+    auto file = ReadRiveFile("assets/script_layout_test.riv", &silver);
+    auto artboard = file->artboardNamed("LayoutScript");
+
+    silver.frameSize(artboard->width(), artboard->height());
+    REQUIRE(artboard != nullptr);
+    auto stateMachine = artboard->stateMachineAt(0);
+    int viewModelId = artboard.get()->viewModelId();
+
+    auto vmi = viewModelId == -1
+                   ? file->createViewModelInstance(artboard.get())
+                   : file->createViewModelInstance(viewModelId, 0);
+    stateMachine->bindViewModelInstance(vmi);
+    auto rows = vmi->propertyValue("Rows")->as<rive::ViewModelInstanceNumber>();
+    REQUIRE(rows != nullptr);
+    auto rowsValue = rows->propertyValue();
+    REQUIRE(rowsValue == 5);
+    auto cols =
+        vmi->propertyValue("Columns")->as<rive::ViewModelInstanceNumber>();
+    REQUIRE(cols != nullptr);
+    auto colsValue = cols->propertyValue();
+    REQUIRE(colsValue == 5);
+    stateMachine->advanceAndApply(0.1f);
+
+    auto renderer = silver.makeRenderer();
+    artboard->draw(renderer.get());
+
+    int frames = 20;
+    for (int i = 0; i < frames; i++)
+    {
+        silver.addFrame();
+        stateMachine->advanceAndApply(0.016f);
+        artboard->draw(renderer.get());
+    }
+
+    rows->propertyValue(8);
+    rowsValue = rows->propertyValue();
+    REQUIRE(rowsValue == 8);
+    cols->propertyValue(7);
+    colsValue = cols->propertyValue();
+    REQUIRE(colsValue == 7);
+    for (int i = 0; i < frames; i++)
+    {
+        silver.addFrame();
+        stateMachine->advanceAndApply(0.016f);
+        artboard->draw(renderer.get());
+    }
+    CHECK(silver.matches("script_layout_grid"));
+}

@@ -1,0 +1,37 @@
+{
+  "name": "@tweenora/webgl2",
+  "version": "0.1.0",
+  "description": "Tweenora's WebGL2 based web runtime.",
+  "main": "rive.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fiaaaansoo/tweenora.git",
+    "directory": "web/rive-wasm/js/npm/webgl2"
+  },
+  "keywords": [
+    "tweenora",
+    "animation",
+    "webgl2"
+  ],
+  "author": "Tweenora",
+  "license": "MIT",
+  "files": [
+    "rive.js",
+    "rive.wasm",
+    "rive_fallback.wasm",
+    "rive.js.map",
+    "rive.d.ts",
+    "rive_advanced.mjs.d.ts",
+    "runtimeLoader.d.ts",
+    "utils",
+    "semantics",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "typings": "rive.d.ts",
+  "dependencies": {},
+  "browser": {
+    "fs": false,
+    "path": false
+  }
+}

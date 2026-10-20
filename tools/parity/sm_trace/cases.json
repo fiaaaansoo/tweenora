@@ -1,0 +1,8 @@
+{
+  "cases": [
+    {"id": "triggers", "path": "runtime/tests/unit_tests/assets/state_machine_triggers.riv", "script": "state_machine_triggers.jsonl"},
+    {"id": "pointer_bool", "path": "runtime/tests/unit_tests/assets/pointer_events.riv", "script": "pointer_events.jsonl"},
+    {"id": "numbers", "path": "runtime/tests/unit_tests/assets/blend_test.riv", "script": "blend_test.jsonl"},
+    {"id": "events", "path": "runtime/tests/unit_tests/assets/looping_timeline_events.riv", "script": "looping_timeline_events.jsonl"}
+  ]
+}

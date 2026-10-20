@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Tweenora: player for .twno and .riv vector animations</title>
+<meta name="description" content="Open a .twno or .riv file in your browser and play its animations and state machines (WebAssembly, WebGL2). Open source, MIT.">
+<link rel="canonical" href="https://tweenora-demo.pages.dev/demo/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="demo.css">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Tweenora: player for .twno and .riv vector animations">
+<meta property="og:description" content="Open a .twno or .riv file in your browser and play its animations and state machines (WebAssembly, WebGL2). Open source, MIT.">
+<meta property="og:url" content="https://tweenora-demo.pages.dev/demo/">
+<meta property="og:image" content="https://tweenora-demo.pages.dev/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<header class="bar">
+  <h1>Tweenora <span class="muted">· Demo</span></h1>
+  <p class="file-name" id="file-name" tabindex="-1">No file</p>
+  <div class="bar-actions">
+    <input id="file-input" type="file" accept=".twno,.riv" hidden>
+    <button class="btn btn-primary" type="button" data-open>Open a file</button>
+    <div class="theme" role="group" aria-label="Theme">
+      <button type="button" data-theme="auto" aria-pressed="true">Auto</button>
+      <button type="button" data-theme="light" aria-pressed="false">Light</button>
+      <button type="button" data-theme="dark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+</header>
+
+<div class="drop-veil" id="drop-veil" hidden>Drop to open</div>
+
+<main class="layout" id="main">
+  <div class="stage-column">
+    <h2 class="visually-hidden">Preview</h2>
+    <div class="stage" id="stage" aria-busy="false">
+      <canvas id="canvas" role="img" aria-label="No file open" hidden></canvas>
+
+      <section class="empty" id="empty" aria-labelledby="empty-title">
+        <h2 id="empty-title">Open an animation</h2>
+        <p>Drop a <code>.twno</code> or <code>.riv</code> file here<span id="empty-hint" hidden>, or pick one from the examples list</span>.</p>
+        <button class="btn btn-primary" type="button" data-open>Browse…</button>
+      </section>
+
+      <p class="loading" id="loading" hidden><span class="spinner" aria-hidden="true"></span><span id="loading-text">Loading…</span></p>
+
+      <div class="error" id="error" role="alert" hidden>
+        <h2 id="error-title">This file could not be opened</h2>
+        <p id="error-text"></p>
+        <div class="row">
+          <button class="btn" type="button" id="retry">Retry</button>
+          <button class="btn" type="button" data-open>Choose another file</button>
+        </div>
+        <details>
+          <summary>Technical details</summary>
+          <pre id="error-details"></pre>
+        </details>
+      </div>
+    </div>
+
+    <div class="playbar" id="playbar" hidden>
+      <button class="btn btn-primary" type="button" id="play">Pause</button>
+      <button class="btn" type="button" id="restart">Restart</button>
+      <label class="field inline" for="backdrop">
+        <span>Background</span>
+        <select id="backdrop">
+          <option value="checker">Checkerboard</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+    </div>
+    <p class="note" id="motion-note" hidden>Autoplay is off (reduced motion): press Play to animate the scene.</p>
+
+  </div>
+
+  <aside class="panel" id="panel" aria-label="Settings">
+    <p class="muted" id="panel-empty">Open a file to see its settings.</p>
+
+    <div id="panel-body" hidden>
+      <details open>
+        <summary><h2>Content</h2></summary>
+        <p class="help">Choosing an animation resets the state machine to "None", and vice versa.</p>
+        <label class="field" for="artboard"><span>Artboard</span><select id="artboard"></select></label>
+        <label class="field" for="animation"><span>Animation</span><select id="animation"></select></label>
+        <label class="field" for="machine"><span>State machine</span><select id="machine"></select></label>
+      </details>
+
+      <details open>
+        <summary><h2>State machine inputs</h2></summary>
+        <div id="inputs"></div>
+      </details>
+
+      <details open>
+        <summary><h2>View model properties</h2></summary>
+        <div id="properties"></div>
+      </details>
+    </div>
+  </aside>
+
+  <section class="examples" id="examples-section" aria-labelledby="examples-title" hidden>
+    <h2 id="examples-title">Examples</h2>
+    <ul class="cards" id="examples"></ul>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <p>Derived from an MIT-licensed upstream runtime; independent project, not affiliated with or endorsed by its authors.</p>
+  <a href="/pkg/THIRD_PARTY_NOTICES">Licenses and third-party notices</a>
+</footer>
+
+<p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
+
+<script src="/pkg/rive.js"></script>
+<script src="demo.js"></script>
+</body>
+</html>

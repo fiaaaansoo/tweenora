@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>State machines and inputs</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var changes = [];
+
+  ex.start(function () {
+    var machine = ex.params.get("stateMachine");
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: machine || undefined,
+      autoplay: true,
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onStateChange: function (event) { changes.push(event.data); },
+      onAdvance: ex.countFrames,
+    });
+
+    function inputs() { return instance.stateMachineInputs(machine) || []; }
+    function find(name) {
+      return inputs().filter(function (input) { return input.name === name; })[0];
+    }
+    var kinds = {};
+    kinds[rive.StateMachineInputType.Number] = "number";
+    kinds[rive.StateMachineInputType.Boolean] = "boolean";
+    kinds[rive.StateMachineInputType.Trigger] = "trigger";
+
+    twnoCheck.instance = instance;
+    twnoCheck.changes = changes;
+    twnoCheck.describe = function () {
+      var list = inputs().map(function (input) {
+        return { name: input.name, type: input.type, kind: kinds[input.type], value: input.value };
+      });
+      document.getElementById("info").textContent = JSON.stringify(list, null, 2);
+      return list;
+    };
+    twnoCheck.contentsInputs = function () {
+      var found = [];
+      instance.contents.artboards.forEach(function (artboard) {
+        artboard.stateMachines.forEach(function (machineContents) {
+          machineContents.inputs.forEach(function (input) {
+            found.push({
+              artboard: artboard.name,
+              animations: artboard.animations,
+              stateMachine: machineContents.name,
+              name: input.name,
+              type: input.type,
+              initialValue: input.initialValue,
+            });
+          });
+        });
+      });
+      return found;
+    };
+    twnoCheck.set = function (name, value) {
+      var input = find(name);
+      input.value = value;
+      return input.value;
+    };
+    twnoCheck.fire = function (name) { find(name).fire(); };
+    twnoCheck.deleteInput = function (name) { find(name).delete(); };
+  });
+</script>
+</body>
+</html>

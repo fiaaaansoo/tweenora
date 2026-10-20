@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Pointers and listeners</title>
+</head>
+<body>
+<div class="controls">
+  <button id="remove" type="button">removeRiveListeners</button>
+  <button id="setup" type="button">setupRiveListeners</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var changes = [];
+
+  ex.start(function () {
+    ex.sizeCanvas(document.getElementById("canvas"));
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || undefined,
+      autoplay: true,
+      shouldDisableRiveListeners: ex.params.get("listeners") === "off",
+      isTouchScrollEnabled: ex.params.get("scroll") === "1",
+      enableMultiTouch: ex.params.get("multi") === "1",
+      dispatchPointerExit: ex.params.get("exit") !== "0",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onStateChange: function (event) { changes.push(event.data); },
+      onAdvance: ex.countFrames,
+    });
+
+    function input(name) {
+      return (instance.stateMachineInputs(ex.params.get("stateMachine")) || []).filter(function (i) {
+        return i.name === name;
+      })[0];
+    }
+
+    twnoCheck.instance = instance;
+    twnoCheck.changes = changes;
+    twnoCheck.touchScroll = function () { return instance.isTouchScrollEnabled; };
+    twnoCheck.inputValue = function (name) { return input(name).value; };
+    twnoCheck.setup = function (touchScroll) {
+      instance.setupRiveListeners({ isTouchScrollEnabled: touchScroll });
+    };
+    twnoCheck.remove = function () { instance.removeRiveListeners(); };
+    document.getElementById("remove").addEventListener("click", twnoCheck.remove);
+    document.getElementById("setup").addEventListener("click", function () { twnoCheck.setup(false); });
+  });
+</script>
+</body>
+</html>

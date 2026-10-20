@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Self-hosting</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var instance = new rive.Rive({
+    src: ex.params.get("file") || "/assets/hosted_image_file.twno",
+    canvas: document.getElementById("canvas"),
+    autoplay: true,
+    onLoad: function () {
+      instance.resizeDrawingSurfaceToCanvas();
+      twnoCheck.wasmUrl = rive.RuntimeLoader.getWasmUrl();
+      twnoCheck.wasmFallbackUrl = rive.RuntimeLoader.getWasmFallbackUrl();
+      document.getElementById("info").textContent =
+        "wasm: " + twnoCheck.wasmUrl + "\nfallback: " + twnoCheck.wasmFallbackUrl;
+      ex.setState("loaded", "loaded with no configuration");
+    },
+    onLoadError: ex.fail,
+    onAdvance: ex.countFrames,
+  });
+  twnoCheck.instance = instance;
+  twnoCheck.origins = function () {
+    return Array.from(new Set(performance.getEntriesByType("resource").map(function (entry) {
+      return new URL(entry.name).origin;
+    })));
+  };
+</script>
+</body>
+</html>

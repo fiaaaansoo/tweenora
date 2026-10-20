@@ -1,0 +1,6130 @@
+import * as rc from "./rive_advanced.mjs";
+import { Animation } from "./animation";
+import { RuntimeLoader, type RuntimeCallback } from "./runtimeLoader";
+import {
+  SemanticTreeModel,
+  AccessibilityOverlay,
+  SemanticMode,
+  SemanticRole,
+  type RiveSemanticsOptions,
+  type SemanticActionType,
+} from "./semantics";
+import {
+  registerTouchInteractions,
+  KeyboardInteractions,
+  FocusSessionState,
+  sanitizeUrl,
+  BLANK_URL,
+  ImageWrapper,
+  AudioWrapper,
+  FontWrapper,
+  finalizationRegistry,
+  CustomFileAssetLoaderWrapper,
+  FileFinalizer,
+  createFinalization,
+  RiveFont as RiveFontClassUtil,
+} from "./utils";
+export type AssetLoadCallback = (
+  asset: rc.FileAsset,
+  bytes: Uint8Array,
+) => boolean;
+
+class RiveError extends Error {
+  public isHandledError = true;
+}
+
+export { RiveFontClassUtil as RiveFont };
+export { SemanticMode };
+export type { RiveSemanticsOptions };
+
+// Note: Re-exporting a few types from rive_advanced.mjs to expose for high-level
+// API usage without re-defining their type definition here. May want to revisit
+// and see if we want to expose both types from rive.ts and rive_advanced.mjs in
+// the future
+export type {
+  FileAsset,
+  AudioAsset,
+  FontAsset,
+  ImageAsset,
+} from "./rive_advanced.mjs";
+
+/**
+ * Generic type for a parameterless void callback
+ */
+export type VoidCallback = () => void;
+
+interface SetupRiveListenersOptions {
+  isTouchScrollEnabled?: boolean;
+}
+
+/**
+ * Type for artboard bounds
+ */
+export type Bounds = rc.AABB;
+
+// #regions helpers
+const resolveErrorMessage = (error: any): string =>
+  error && error.isHandledError
+    ? error.message
+    : "Problem loading file; may be corrupt!";
+
+// #region layout
+
+// Fit options for the canvas
+export enum Fit {
+  Cover = "cover",
+  Contain = "contain",
+  Fill = "fill",
+  FitWidth = "fitWidth",
+  FitHeight = "fitHeight",
+  None = "none",
+  ScaleDown = "scaleDown",
+  Layout = "layout",
+}
+
+// Alignment options for the canvas
+export enum Alignment {
+  Center = "center",
+  TopLeft = "topLeft",
+  TopCenter = "topCenter",
+  TopRight = "topRight",
+  CenterLeft = "centerLeft",
+  CenterRight = "centerRight",
+  BottomLeft = "bottomLeft",
+  BottomCenter = "bottomCenter",
+  BottomRight = "bottomRight",
+}
+
+// Drawing optimization options
+export enum DrawOptimizationOptions {
+  AlwaysDraw = "alwaysDraw",
+  DrawOnChanged = "drawOnChanged",
+}
+
+// Options for Rive focus management
+export interface RiveFocusOptions {
+  /**
+   * When true, allows Rive to interrupt browser focus and programmatically
+   * set/release focus on the canvas when the state machine reports focus
+   * changes in Rive. This allows apps to direct focus to/from the canvas or
+   * related elements as needed if not currently focused, which can happen at
+   * any point in the Rive render loop.
+   *
+   * Note: Nodes in the Rive graphic may still receive/release focus respecting
+   * any focus rules defined in the state machine.
+   *
+   * @default false to prevent unwanted focus interruptions
+   */
+  allowFocusInterrupt: boolean;
+}
+
+// Interface for the Layout static method constructor
+export interface LayoutParameters {
+  fit?: Fit;
+  alignment?: Alignment;
+  layoutScaleFactor?: number;
+  minX?: number;
+  minY?: number;
+  maxX?: number;
+  maxY?: number;
+}
+
+// Alignment options for Rive animations in a HTML canvas
+export class Layout {
+  // Runtime fit and alignment are accessed every frame, so we cache their
+  // values to save cycles
+  private cachedRuntimeFit: rc.Fit;
+  private cachedRuntimeAlignment: rc.Alignment;
+
+  public readonly fit: Fit;
+  public readonly alignment: Alignment;
+  public readonly layoutScaleFactor: number;
+  public readonly minX: number;
+  public readonly minY: number;
+  public readonly maxX: number;
+  public readonly maxY: number;
+
+  constructor(params?: LayoutParameters) {
+    this.fit = params?.fit ?? Fit.Contain;
+    this.alignment = params?.alignment ?? Alignment.Center;
+    this.layoutScaleFactor = params?.layoutScaleFactor ?? 1;
+    this.minX = params?.minX ?? 0;
+    this.minY = params?.minY ?? 0;
+    this.maxX = params?.maxX ?? 0;
+    this.maxY = params?.maxY ?? 0;
+  }
+
+  // Alternative constructor to build a Layout from an interface/object
+  static new({
+    fit,
+    alignment,
+    minX,
+    minY,
+    maxX,
+    maxY,
+  }: LayoutParameters): Layout {
+    warnOnce(
+      DeprecationKeys.legacyConstructors,
+      "This function is deprecated: please use `new Layout({})` instead",
+    );
+    return new Layout({ fit, alignment, minX, minY, maxX, maxY });
+  }
+
+  /**
+   * Makes a copy of the layout, replacing any specified parameters
+   */
+  public copyWith({
+    fit,
+    alignment,
+    layoutScaleFactor,
+    minX,
+    minY,
+    maxX,
+    maxY,
+  }: LayoutParameters): Layout {
+    return new Layout({
+      fit: fit ?? this.fit,
+      alignment: alignment ?? this.alignment,
+      layoutScaleFactor: layoutScaleFactor ?? this.layoutScaleFactor,
+      minX: minX ?? this.minX,
+      minY: minY ?? this.minY,
+      maxX: maxX ?? this.maxX,
+      maxY: maxY ?? this.maxY,
+    });
+  }
+
+  // Returns fit for the Wasm runtime format
+  public runtimeFit(rive: rc.RiveCanvas): rc.Fit {
+    if (this.cachedRuntimeFit) return this.cachedRuntimeFit;
+
+    let fit;
+    if (this.fit === Fit.Cover) fit = rive.Fit.cover;
+    else if (this.fit === Fit.Contain) fit = rive.Fit.contain;
+    else if (this.fit === Fit.Fill) fit = rive.Fit.fill;
+    else if (this.fit === Fit.FitWidth) fit = rive.Fit.fitWidth;
+    else if (this.fit === Fit.FitHeight) fit = rive.Fit.fitHeight;
+    else if (this.fit === Fit.ScaleDown) fit = rive.Fit.scaleDown;
+    else if (this.fit === Fit.Layout) fit = rive.Fit.layout;
+    else fit = rive.Fit.none;
+
+    this.cachedRuntimeFit = fit;
+    return fit;
+  }
+
+  // Returns alignment for the Wasm runtime format
+  public runtimeAlignment(rive: rc.RiveCanvas): rc.Alignment {
+    if (this.cachedRuntimeAlignment) return this.cachedRuntimeAlignment;
+
+    let alignment;
+    if (this.alignment === Alignment.TopLeft)
+      alignment = rive.Alignment.topLeft;
+    else if (this.alignment === Alignment.TopCenter)
+      alignment = rive.Alignment.topCenter;
+    else if (this.alignment === Alignment.TopRight)
+      alignment = rive.Alignment.topRight;
+    else if (this.alignment === Alignment.CenterLeft)
+      alignment = rive.Alignment.centerLeft;
+    else if (this.alignment === Alignment.CenterRight)
+      alignment = rive.Alignment.centerRight;
+    else if (this.alignment === Alignment.BottomLeft)
+      alignment = rive.Alignment.bottomLeft;
+    else if (this.alignment === Alignment.BottomCenter)
+      alignment = rive.Alignment.bottomCenter;
+    else if (this.alignment === Alignment.BottomRight)
+      alignment = rive.Alignment.bottomRight;
+    else alignment = rive.Alignment.center;
+
+    this.cachedRuntimeAlignment = alignment;
+    return alignment;
+  }
+}
+
+// #endregion
+
+// #region runtime
+
+export { RuntimeLoader, type RuntimeCallback };
+
+// #endregion
+
+// #region state machines
+
+/**
+ * @deprecated State machine inputs are deprecated and will be removed in a
+ * future major version: please use data binding properties instead. See
+ * the upstream Rive documentation
+ * for how to migrate.
+ */
+export enum StateMachineInputType {
+  Number = 56,
+  Trigger = 58,
+  Boolean = 59,
+}
+
+/**
+ * An input for a state machine
+ * @deprecated State machine inputs are deprecated and will be removed in a
+ * future major version: please use data binding properties instead. See
+ * the upstream Rive documentation
+ * for how to migrate.
+ */
+export class StateMachineInput {
+  constructor(
+    public readonly type: StateMachineInputType,
+    private runtimeInput: rc.SMIInput,
+  ) {}
+
+  /**
+   * Returns the name of the input
+   */
+  public get name(): string {
+    return this.runtimeInput.name;
+  }
+
+  /**
+   * Returns the current value of the input
+   */
+  public get value(): number | boolean {
+    return this.runtimeInput.value;
+  }
+
+  /**
+   * Sets the value of the input
+   */
+  public set value(value: number | boolean) {
+    this.runtimeInput.value = value;
+  }
+
+  /**
+   * Fires a trigger; does nothing on Number or Boolean input types
+   */
+  public fire(): void {
+    if (this.type === StateMachineInputType.Trigger) {
+      this.runtimeInput.fire();
+    }
+  }
+
+  /**
+   * Deletes the input
+   */
+  public delete(): void {
+    this.runtimeInput = null;
+  }
+}
+
+/**
+ * @deprecated Subscribing to Rive Events at runtime is deprecated and will be removed in a future major
+ * version: please use data binding instead. See
+ * the upstream Rive documentation for how to migrate.
+ */
+export enum RiveEventType {
+  General = 128,
+  OpenUrl = 131,
+}
+
+class BaseArtboard {
+  public isBindableArtboard: boolean = false;
+  constructor(_isBindableArtboard: boolean) {
+    this.isBindableArtboard = _isBindableArtboard;
+  }
+}
+
+class Artboard extends BaseArtboard {
+  public nativeArtboard: rc.Artboard;
+  public file: RiveFile;
+  constructor(artboard: rc.Artboard, _file: RiveFile) {
+    super(false);
+    this.nativeArtboard = artboard;
+    this.file = _file;
+  }
+}
+
+class BindableArtboard extends BaseArtboard implements rc.FinalizableTarget {
+  public selfUnref: boolean = false;
+  public nativeArtboard: rc.BindableArtboard;
+  public nativeViewModel: rc.ViewModelInstance | null;
+  constructor(artboard: rc.BindableArtboard) {
+    super(true);
+    this.nativeArtboard = artboard;
+  }
+  public set viewModel(value: ViewModelInstance) {
+    this.nativeViewModel = value.nativeInstance;
+  }
+  destroy() {
+    if (this.selfUnref) {
+      this.nativeArtboard.unref();
+      this.nativeViewModel?.unref();
+    }
+  }
+}
+
+class StateMachine {
+  /**
+   * Caches the inputs from the runtime
+   */
+  public readonly inputs: StateMachineInput[] = [];
+
+  /**
+   * Runtime state machine instance
+   */
+  public readonly instance: rc.StateMachineInstance;
+
+  /**
+   * Whether this state machine has focus nodes
+   */
+  public get hasFocusNodes(): boolean {
+    return this.instance.hasFocusNodes();
+  }
+
+  /**
+   * @constructor
+   * @param stateMachine runtime state machine object
+   * @param instance runtime state machine instance object
+   */
+  constructor(
+    private stateMachine: rc.StateMachine,
+    runtime: rc.RiveCanvas,
+    public playing: boolean,
+    private artboard: rc.Artboard,
+  ) {
+    this.instance = new runtime.StateMachineInstance(stateMachine, artboard);
+    this.initInputs(runtime);
+  }
+
+  public get name(): string {
+    return this.stateMachine.name;
+  }
+
+  /**
+   * Returns a list of state names that have changed on this frame
+   */
+  public get statesChanged(): string[] {
+    const names: string[] = [];
+    for (let i = 0; i < this.instance.stateChangedCount(); i++) {
+      names.push(this.instance.stateChangedNameByIndex(i));
+    }
+    return names;
+  }
+
+  /**
+   * Advances the state machine instance by a given time.
+   * @param time - the time to advance the animation by in seconds
+   */
+  public advance(time: number) {
+    this.instance.advance(time);
+  }
+
+  /**
+   * Advances the state machine instance by a given time and apply changes to artboard.
+   * @param time - the time to advance the animation by in seconds
+   */
+  public advanceAndApply(time: number) {
+    this.instance.advanceAndApply(time);
+  }
+
+  /**
+   * Enables semantic tree tracking for this state machine instance.
+   */
+  public enableSemantics() {
+    this.instance.enableSemantics();
+  }
+
+  /**
+   * Returns the incremental semantic diff since the last call, or null
+   * if semantics is not enabled or nothing changed.
+   */
+  public drainSemanticsDiff(): rc.SemanticsDiff | null {
+    return this.instance.drainSemanticsDiff();
+  }
+
+  /**
+   * Fire a semantic action (tap, increase, decrease) on a node.
+   * @param nodeId - The semantic node ID to target
+   * @param actionType - 0 = tap, 1 = increase, 2 = decrease
+   */
+  public fireSemanticAction(nodeId: number, actionType: SemanticActionType) {
+    this.instance.fireSemanticAction(nodeId, actionType);
+  }
+
+  /**
+   * When tools that enable accessible experiences traverse elements with focus,
+   * we should call this method to focus the semantic node. It will also trigger
+   * focus on any Focus listeners for this node
+   * @param nodeId ID of the Semantic Node to focus
+   * @returns boolean - True if focus was set, false otherwise
+   */
+  public focusSemanticNode(nodeId: number): boolean {
+    return this.instance.focusSemanticNode(nodeId);
+  }
+
+  /**
+   * Returns the number of events reported from the last advance call
+   * @returns Number of events reported
+   */
+  public reportedEventCount(): number {
+    return this.instance.reportedEventCount();
+  }
+
+  /**
+   * Returns a RiveEvent object emitted from the last advance call at the given index
+   * of a list of potentially multiple events. If an event at the index is not found,
+   * undefined is returned.
+   * @param i index of the event reported in a list of potentially multiple events
+   * @returns RiveEvent or extended RiveEvent object returned, or undefined
+   */
+  reportedEventAt(i: number): rc.OpenUrlEvent | rc.RiveEvent | undefined {
+    return this.instance.reportedEventAt(i);
+  }
+
+  /**
+   * Fetches references to the state machine's inputs and caches them
+   * @param runtime an instance of the runtime; needed for the SMIInput types
+   */
+  private initInputs(runtime: rc.RiveCanvas): void {
+    // Fetch the inputs from the runtime if we don't have them
+    for (let i = 0; i < this.instance.inputCount(); i++) {
+      const input = this.instance.input(i);
+      this.inputs.push(this.mapRuntimeInput(input, runtime));
+    }
+  }
+
+  /**
+   * Maps a runtime input to it's appropriate type
+   * @param input
+   */
+  private mapRuntimeInput(
+    input: rc.SMIInput,
+    runtime: rc.RiveCanvas,
+  ): StateMachineInput {
+    if (input.type === runtime.SMIInput.bool) {
+      return new StateMachineInput(
+        StateMachineInputType.Boolean,
+        input.asBool(),
+      );
+    } else if (input.type === runtime.SMIInput.number) {
+      return new StateMachineInput(
+        StateMachineInputType.Number,
+        input.asNumber(),
+      );
+    } else if (input.type === runtime.SMIInput.trigger) {
+      return new StateMachineInput(
+        StateMachineInputType.Trigger,
+        input.asTrigger(),
+      );
+    }
+  }
+
+  /**
+   * Deletes the backing Wasm state machine instance; once this is called, this
+   * state machine is no more.
+   */
+  public cleanup() {
+    this.inputs.forEach((input) => {
+      input.delete();
+    });
+    this.inputs.length = 0;
+    this.instance.delete();
+  }
+
+  public bindViewModelInstance(viewModelInstance: ViewModelInstance) {
+    if (viewModelInstance.runtimeInstance != null) {
+      this.instance.bindViewModelInstance(viewModelInstance.runtimeInstance);
+    }
+  }
+
+  /**
+   * Get metadata about the state of focus if applicable for this state machine.
+   * @returns FocusState - { hasFocus: boolean, expectsKeyboardInput: boolean }
+   */
+  public focusState(): rc.FocusState { 
+    return this.instance.focusState();
+  }
+
+  /**
+   * Clear focus from the Rive focus node tree.
+   */
+  public clearFocus(): void {
+    this.instance.clearFocus();
+  }
+}
+
+// #endregion
+
+// #region animator
+
+/**
+ * Manages animation
+ */
+class Animator {
+  /**
+   * Constructs a new animator
+   * @constructor
+   * @param runtime Rive runtime; needed to instance animations & state machines
+   * @param artboard the artboard that holds all animations and state machines
+   * @param animations optional list of animations
+   * @param stateMachines optional list of state machines
+   */
+  constructor(
+    private runtime: rc.RiveCanvas,
+    private artboard: rc.Artboard,
+    private eventManager: EventManager,
+    public readonly animations: Animation[] = [],
+    public readonly stateMachines: StateMachine[] = [],
+  ) {}
+
+  /**
+   * Adds animations and state machines by their names. If names are shared
+   * between animations & state machines, then the first one found will be
+   * created. Best not to use the same names for these in your Rive file.
+   * @param animatable the name(s) of animations and state machines to add
+   * @returns a list of names of the playing animations and state machines
+   */
+  public add(
+    animatables: string | string[],
+    playing: boolean,
+    fireEvent = true,
+    semanticsActive = false,
+  ): string[] {
+    animatables = mapToStringArray(animatables);
+    // If animatables is empty, play or pause everything
+    if (animatables.length === 0) {
+      this.animations.forEach((a) => (a.playing = playing));
+      this.stateMachines.forEach((m) => (m.playing = playing));
+    } else {
+      // Play/pause already instanced items, or create new instances
+      const instancedAnimationNames = this.animations.map((a) => a.name);
+      const instancedMachineNames = this.stateMachines.map((m) => m.name);
+      for (let i = 0; i < animatables.length; i++) {
+        const aIndex = instancedAnimationNames.indexOf(animatables[i]);
+        const mIndex = instancedMachineNames.indexOf(animatables[i]);
+        if (aIndex >= 0 || mIndex >= 0) {
+          if (aIndex >= 0) {
+            // Animation is instanced, play/pause it
+            this.animations[aIndex].playing = playing;
+          } else {
+            // State machine is instanced, play/pause it
+            this.stateMachines[mIndex].playing = playing;
+          }
+        } else {
+          // Try to create a new animation instance
+          const anim = this.artboard.animationByName(animatables[i]);
+          if (anim) {
+            const newAnimation = new Animation(
+              anim,
+              this.artboard,
+              this.runtime,
+              playing,
+            );
+            // Display the first frame of the specified animation
+            newAnimation.advance(0);
+            newAnimation.apply(1.0);
+            this.animations.push(newAnimation);
+          } else {
+            // Try to create a new state machine instance
+            const sm = this.artboard.stateMachineByName(animatables[i]);
+            if (sm) {
+              const newStateMachine = new StateMachine(
+                sm,
+                this.runtime,
+                playing,
+                this.artboard,
+              );
+              if (semanticsActive) {
+                newStateMachine.enableSemantics();
+              }
+              this.stateMachines.push(newStateMachine);
+            }
+          }
+        }
+      }
+    }
+    // Fire play/paused events for animations
+    if (fireEvent) {
+      if (playing) {
+        this.eventManager.fire({
+          type: EventType.Play,
+          data: this.playing,
+        });
+      } else {
+        this.eventManager.fire({
+          type: EventType.Pause,
+          data: this.paused,
+        });
+      }
+    }
+
+    return playing ? this.playing : this.paused;
+  }
+
+  /**
+   * Adds linear animations by their names.
+   * @param animatables the name(s) of animations to add
+   * @param playing whether animations should play on instantiation
+   */
+  public initLinearAnimations(animatables: string[], playing: boolean, isFallingBackFromStateMachines = false) {
+    // Play/pause already instanced items, or create new instances
+    // This validation is kept to maintain compatibility with current behavior.
+    // But given that it this is called during artboard initialization
+    // it should probably be safe to remove.
+    const instancedAnimationNames = this.animations.map((a) => a.name);
+    for (let i = 0; i < animatables.length; i++) {
+      const aIndex = instancedAnimationNames.indexOf(animatables[i]);
+      if (aIndex >= 0) {
+        this.animations[aIndex].playing = playing;
+      } else {
+        // Try to create a new animation instance
+        const anim = this.artboard.animationByName(animatables[i]);
+        if (anim) {
+          const newAnimation = new Animation(
+            anim,
+            this.artboard,
+            this.runtime,
+            playing,
+          );
+          // Display the first frame of the specified animation
+          newAnimation.advance(0);
+          newAnimation.apply(1.0);
+          this.animations.push(newAnimation);
+        } else if (isFallingBackFromStateMachines) { // Throw LoadError if we cannot load the state machine name at all
+          const smInitializationMessage = `State Machine with name ${animatables[i]} not found`;
+          throw new RiveError(smInitializationMessage);
+        } else {
+          console.error(`Animation with name ${animatables[i]} not found.`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Adds state machines by their names.
+   * @param animatables the name(s) of state machines to add
+   * @param playing whether state machines should play on instantiation
+   */
+  public initStateMachines(animatables: string[], playing: boolean, semanticsActive: boolean) {
+    // Play/pause already instanced items, or create new instances
+    // This validation is kept to maintain compatibility with current behavior.
+    // But given that it this is called during artboard initialization
+    // it should probably be safe to remove.
+    const instancedStateMachineNames = this.stateMachines.map((a) => a.name);
+    for (let i = 0; i < animatables.length; i++) {
+      const aIndex = instancedStateMachineNames.indexOf(animatables[i]);
+      if (aIndex >= 0) {
+        this.stateMachines[aIndex].playing = playing;
+      } else {
+        // Try to create a new state machine instance
+        const sm = this.artboard.stateMachineByName(animatables[i]);
+        if (sm) {
+          const newStateMachine = new StateMachine(
+            sm,
+            this.runtime,
+            playing,
+            this.artboard,
+          );
+          if (semanticsActive) {
+            newStateMachine.enableSemantics();
+          }
+          this.stateMachines.push(newStateMachine);
+        } else {
+          console.warn(`State Machine with name ${animatables[i]} not found. Falling back to find an animation with the same name.`);
+          
+          // TODO: Remove this fallback in next major release as it complicates initialization.
+          // In order to maintain compatibility with current behavior, if a state machine is not found
+          // we look for an animation with the same name
+          this.initLinearAnimations([animatables[i]], playing, true);
+        }
+      }
+    }
+  }
+
+  /**
+   * Play the named animations/state machines
+   * @param animatables the names of the animations/machines to play; plays all if empty
+   * @returns a list of the playing items
+   */
+  public play(animatables: string | string[]): string[] {
+    return this.add(animatables, true);
+  }
+
+  /**
+   * Advance state machines if they are paused after initialization
+   */
+  public advanceIfPaused(): void {
+    this.stateMachines.forEach((sm) => {
+      if (!sm.playing) {
+        sm.advanceAndApply(0);
+      }
+    });
+  }
+
+  /**
+   * Pauses named animations and state machines, or everything if nothing is
+   * specified
+   * @param animatables names of the animations and state machines to pause
+   * @returns a list of names of the animations and state machines paused
+   */
+  public pause(animatables: string[]): string[] {
+    return this.add(animatables, false);
+  }
+
+  /**
+   * Set time of named animations
+   * @param animations names of the animations to scrub
+   * @param value time scrub value, a floating point number to which the playhead is jumped
+   * @returns a list of names of the animations that were scrubbed
+   */
+  public scrub(animatables: string[], value: number): string[] {
+    const forScrubbing = this.animations.filter((a) =>
+      animatables.includes(a.name),
+    );
+    forScrubbing.forEach((a) => (a.scrubTo = value));
+    return forScrubbing.map((a) => a.name);
+  }
+
+  /**
+   * Returns a list of names of all animations and state machines currently
+   * playing
+   */
+  public get playing(): string[] {
+    return this.animations
+      .filter((a) => a.playing)
+      .map((a) => a.name)
+      .concat(this.stateMachines.filter((m) => m.playing).map((m) => m.name));
+  }
+
+  /**
+   * Returns a list of names of all animations and state machines currently
+   * paused
+   */
+  public get paused(): string[] {
+    return this.animations
+      .filter((a) => !a.playing)
+      .map((a) => a.name)
+      .concat(this.stateMachines.filter((m) => !m.playing).map((m) => m.name));
+  }
+
+  /**
+   * Stops and removes all named animations and state machines
+   * @param animatables animations and state machines to remove
+   * @returns a list of names of removed items
+   */
+  public stop(animatables?: string[] | string): string[] {
+    animatables = mapToStringArray(animatables);
+
+    // If nothing's specified, wipe them out, all of them
+    let removedNames: string[] = [];
+    // Stop everything
+    if (animatables.length === 0) {
+      removedNames = this.animations
+        .map((a) => a.name)
+        .concat(this.stateMachines.map((m) => m.name));
+      // Clean up before emptying the arrays
+      this.animations.forEach((a) => a.cleanup());
+      this.stateMachines.forEach((m) => m.cleanup());
+      // Empty out the arrays
+      this.animations.splice(0, this.animations.length);
+      this.stateMachines.splice(0, this.stateMachines.length);
+    } else {
+      // Remove only the named animations/state machines
+      const animationsToRemove = this.animations.filter((a) =>
+        animatables.includes(a.name),
+      );
+
+      animationsToRemove.forEach((a) => {
+        a.cleanup();
+        this.animations.splice(this.animations.indexOf(a), 1);
+      });
+      const machinesToRemove = this.stateMachines.filter((m) =>
+        animatables.includes(m.name),
+      );
+      machinesToRemove.forEach((m) => {
+        m.cleanup();
+        this.stateMachines.splice(this.stateMachines.indexOf(m), 1);
+      });
+      removedNames = animationsToRemove
+        .map((a) => a.name)
+        .concat(machinesToRemove.map((m) => m.name));
+    }
+
+    this.eventManager.fire({
+      type: EventType.Stop,
+      data: removedNames,
+    });
+
+    // Return the list of animations removed
+    return removedNames;
+  }
+
+  /**
+   * Returns true if at least one animation is active
+   */
+  public get isPlaying(): boolean {
+    return (
+      this.animations.reduce((acc, curr) => acc || curr.playing, false) ||
+      this.stateMachines.reduce((acc, curr) => acc || curr.playing, false)
+    );
+  }
+
+  /**
+   * Returns true if all animations are paused and there's at least one animation
+   */
+  public get isPaused(): boolean {
+    return (
+      !this.isPlaying &&
+      (this.animations.length > 0 || this.stateMachines.length > 0)
+    );
+  }
+
+  /**
+   * Returns true if there are no playing or paused animations/state machines
+   */
+  public get isStopped(): boolean {
+    return this.animations.length === 0 && this.stateMachines.length === 0;
+  }
+
+  /**
+   * If there are no animations or state machines, add the first one found
+   * @returns the name of the animation or state machine instanced
+   */
+  public atLeastOne(playing: boolean, fireEvent = true, semanticsActive = false): string {
+    let instancedName: string;
+    if (this.animations.length === 0 && this.stateMachines.length === 0) {
+      if (this.artboard.animationCount() > 0) {
+        // Warn only when the v3 default would actually change what plays
+        if (this.artboard.stateMachineCount() > 0) {
+          warnOnce(
+            DeprecationKeys.defaultStateMachine,
+            "No `stateMachine` was specified, so the artboard's first linear animation is playing by default. " +
+              "In the next major version, the artboard's state machine will be played by default instead when one exists. " +
+              "Pass the `stateMachine` parameter to adopt that behavior now.",
+          );
+        }
+        // Add the first animation
+        this.add(
+          [(instancedName = this.artboard.animationByIndex(0).name)],
+          playing,
+          fireEvent,
+        );
+      } else if (this.artboard.stateMachineCount() > 0) {
+        // Add the first state machine
+        this.add(
+          [(instancedName = this.artboard.stateMachineByIndex(0).name)],
+          playing,
+          fireEvent,
+          semanticsActive,
+        );
+      }
+    }
+    return instancedName;
+  }
+
+  /**
+   * Checks if any animations have looped and if so, fire the appropriate event
+   */
+  public handleLooping() {
+    for (const animation of this.animations.filter((a) => a.playing)) {
+      // Emit if the animation looped
+      if (animation.loopValue === 0 && animation.loopCount) {
+        animation.loopCount = 0;
+        // This is a one-shot; if it has ended, delete the instance
+        this.stop(animation.name);
+      } else if (animation.loopValue === 1 && animation.loopCount) {
+        this.eventManager.fire({
+          type: EventType.Loop,
+          data: { animation: animation.name, type: LoopType.Loop },
+        });
+        animation.loopCount = 0;
+      }
+      // Wasm indicates a loop at each time the animation
+      // changes direction, so a full loop/lap occurs every
+      // two loop counts
+      else if (animation.loopValue === 2 && animation.loopCount > 1) {
+        this.eventManager.fire({
+          type: EventType.Loop,
+          data: { animation: animation.name, type: LoopType.PingPong },
+        });
+        animation.loopCount = 0;
+      }
+    }
+  }
+
+  /**
+   * Checks if states have changed in state machines and fires a statechange
+   * event
+   */
+  public handleStateChanges() {
+    const statesChanged: string[] = [];
+    for (const stateMachine of this.stateMachines.filter((sm) => sm.playing)) {
+      statesChanged.push(...stateMachine.statesChanged);
+    }
+    if (statesChanged.length > 0) {
+      this.eventManager.fire({
+        type: EventType.StateChange,
+        data: statesChanged,
+      });
+    }
+  }
+
+  public handleAdvancing(time: number) {
+    this.eventManager.fire({
+      type: EventType.Advance,
+      data: time,
+    });
+  }
+}
+
+// #endregion
+
+// #region events
+
+/**
+ * Supported event types triggered in Rive
+ */
+export enum EventType {
+  Load = "load",
+  LoadError = "loaderror",
+  Play = "play",
+  Pause = "pause",
+  Stop = "stop",
+  /**
+   * @deprecated Loop events are deprecated and will be removed in a future
+   * major version: they are only reported for linear animation playback, which
+   * is deprecated. Use a state machine to control playback and data binding to
+   * react to changes instead. See
+   * the upstream Rive documentation for how
+   * to migrate.
+   */
+  Loop = "loop",
+  Draw = "draw",
+  Advance = "advance",
+  /**
+   * @deprecated Subscribing to state change events at runtime is deprecated
+   * and will be removed in a future major version: use data binding (view model
+   * property observers) or state machine actions to react to changes from your
+   * graphic instead. See
+   * the upstream Rive documentation for more details.
+   */
+  StateChange = "statechange",
+  /**
+   * @deprecated Subscribing to Rive Events at runtime is deprecated and will be removed in a future
+   * major version: please use data binding instead. See
+   * the upstream Rive documentation for how to migrate.
+   */
+  RiveEvent = "riveevent",
+  AudioStatusChange = "audiostatuschange", // internal event. TODO: split
+}
+
+/**
+ * @deprecated Subscribing to Rive Events at runtime is deprecated and will be removed in a future major
+ * version: please use data binding instead. See
+ * the upstream Rive documentation for how to migrate.
+ */
+export type RiveEventPayload = rc.RiveEvent | rc.OpenUrlEvent;
+
+const riveEventsDeprecationWarning =
+  "Subscribing to events at runtime is deprecated and will be removed in a future major version: " +
+  "please use data binding instead.";
+
+const stateMachineInputsDeprecationWarning =
+  "State machine inputs are deprecated and will be removed in a future major version: " +
+  "please use data binding properties instead.";
+
+const textRunsDeprecationWarning =
+  "Text run APIs are deprecated and will be removed in a future major version: " +
+  "please use data binding instead.";
+
+const loopEventsDeprecationWarning =
+  "Loop events are deprecated and will be removed in a future major version: " +
+  "they are only reported for linear animation playback, which is deprecated. " +
+  "Use a state machine to control playback and data binding to react to changes instead.";
+
+const stateChangeEventsDeprecationWarning =
+  "Subscribing to state change events at runtime is deprecated and will be removed in a future major version: " +
+  "use data binding (view model property observers) or state machine actions to react to " + 
+  "changes from your graphic instead.";
+
+/**
+ * The deprecations this runtime warns about. Each warning prints its own id, so
+ * the value can be copied straight out of the console into
+ * {@link Rive.suppressDeprecationWarnings}.
+ */
+export const DeprecationKeys = {
+  animationNames: "animation-names",
+  animationsParam: "animations-param",
+  defaultStateMachine: "default-state-machine",
+  legacyConstructors: "legacy-constructors",
+  legacyUnsubscribe: "legacy-unsubscribe",
+  loopEvents: "loop-events",
+  namesArray: "names-array",
+  riveEvents: "rive-events",
+  scrub: "scrub",
+  stateChangeEvents: "state-change-events",
+  stateMachineInputs: "state-machine-inputs",
+  stateMachinesParam: "state-machines-param",
+  textRuns: "text-runs",
+} as const;
+
+/**
+ * An id accepted by {@link Rive.suppressDeprecationWarnings}, as either a
+ * {@link DeprecationKeys} entry or the string literal it holds.
+ */
+export type DeprecationId =
+  (typeof DeprecationKeys)[keyof typeof DeprecationKeys];
+
+// Derived from `DeprecationKeys`
+const deprecationIds = new Set<string>(
+  Object.keys(DeprecationKeys).map(
+    (name) => DeprecationKeys[name as keyof typeof DeprecationKeys],
+  ),
+);
+
+// Deprecations that a consumer has opted out of. Kept at module scope so
+// `warnOnce` can read it without referencing the `Rive` class
+const suppressedDeprecations = new Set<DeprecationId>();
+
+/** @internal Backing store for `Rive.suppressDeprecationWarnings`. */
+const setSuppressedDeprecations = (ids: readonly DeprecationId[]): void => {
+  suppressedDeprecations.clear();
+  if (!Array.isArray(ids)) {
+    console.warn(
+      "[Rive] `suppressDeprecationWarnings` expects an array of deprecation ids, " +
+        `received ${typeof ids}. Nothing was suppressed.`,
+    );
+    return;
+  }
+  for (const id of ids) {
+    if (deprecationIds.has(id)) {
+      suppressedDeprecations.add(id);
+    }
+  }
+};
+
+// Deprecation warnings already emitted; each is logged at most once per page
+// session to avoid flooding the console when many instances are created.
+const emittedWarnings = new Set<string>();
+
+/**
+ * Logs a deprecation warning at most once per page session, unless its id has
+ * been passed to `Rive.suppressDeprecationWarnings`.
+ */
+const warnOnce = (id: DeprecationId, message: string) => {
+  if (suppressedDeprecations.has(id)) {
+    return;
+  }
+  const key = `${id}:${message}`;
+  if (emittedWarnings.has(key)) {
+    return;
+  }
+  emittedWarnings.add(key);
+  console.warn(
+    `[Rive: ${id}] ${message}\n` +
+      `To suppress this warning, set Rive.suppressDeprecationWarnings = ["${id}"]`,
+  );
+};
+
+/**
+ * Warns that a playback-control method received an array of names; the next
+ * major version restricts these parameters to a single string, since playing
+ * multiple animations or state machines at once will not be supported.
+ */
+const warnIfNamesArray = (
+  names: string | string[] | undefined,
+  methodName: string,
+) => {
+  if (Array.isArray(names)) {
+    warnOnce(
+      DeprecationKeys.namesArray,
+      `Passing an array of names to \`${methodName}()\` is deprecated: in the next major version this parameter will be a single string, and playing multiple animations or state machines at once will not be supported.`,
+    );
+  }
+};
+
+/**
+ * Warns that a playback-control method received linear animation names;
+ * name-based control remains supported for state machines only, so
+ * user-specified linear animation names are going away in a future major
+ * version.
+ */
+const warnDeprecatedAnimationNames = (methodName: string) => {
+  warnOnce(
+    DeprecationKeys.animationNames,
+    `Passing linear animation names to \`${methodName}()\` is deprecated and will be removed in a future major version: ` +
+      "Pass a single state machine name to control playback instead.",
+  );
+};
+
+// Event reported by Rive for significant events during animation playback (i.e. play, pause, stop, etc.),
+// as well as for custom Rive events reported from the state machine defined at design-time.
+export interface Event {
+  type: EventType;
+  data?: string | string[] | LoopEvent | number | RiveEventPayload | RiveFile;
+}
+
+/**
+ * Looping types: one-shot, loop, and ping-pong
+ * @deprecated Loop events are deprecated and will be removed in a future major
+ * version: they are only reported for linear animation playback, which is
+ * deprecated. Use a state machine to control playback and data binding to
+ * react to changes instead.
+ */
+export enum LoopType {
+  OneShot = "oneshot", // has value 0 in runtime
+  Loop = "loop", // has value 1 in runtime
+  PingPong = "pingpong", // has value 2 in runtime
+}
+
+/**
+ * Loop events are returned through onloop callbacks
+ * @deprecated Loop events are deprecated and will be removed in a future major
+ * version: they are only reported for linear animation playback, which is
+ * deprecated. Use a state machine to control playback and data binding to
+ * react to changes instead.
+ */
+export interface LoopEvent {
+  animation: string;
+  type: LoopType;
+}
+
+/**
+ * Loop events are returned through onloop callbacks
+ */
+export type EventCallback = (event: Event) => void;
+
+/**
+ * Event listeners registered with the event manager
+ */
+export interface EventListener {
+  type: EventType;
+  callback: EventCallback;
+}
+
+/**
+ * FPS Reporting through callbacks sent to the WASM runtime
+ */
+export type FPSCallback = (fps: number) => void;
+
+// Manages Rive events and listeners
+class EventManager {
+  constructor(private listeners: EventListener[] = []) {}
+
+  // Gets listeners of specified type
+  private getListeners(type: EventType): EventListener[] {
+    return this.listeners.filter((e) => e.type === type);
+  }
+
+  // Adds a listener
+  public add(listener: EventListener): void {
+    if (!this.listeners.includes(listener)) {
+      this.listeners.push(listener);
+    }
+  }
+
+  /**
+   * Removes a listener
+   * @param listener the listener with the callback to be removed
+   */
+  public remove(listener: EventListener): void {
+    // We can't simply look for the listener as it'll be a different instance to
+    // one originally subscribed. Find all the listeners of the right type and
+    // then check their callbacks which should match.
+    for (let i = 0; i < this.listeners.length; i++) {
+      const currentListener = this.listeners[i];
+      if (currentListener.type === listener.type) {
+        if (currentListener.callback === listener.callback) {
+          this.listeners.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Clears all listeners of specified type, or every listener if no type is
+   * specified
+   * @param type the type of listeners to clear, or all listeners if not
+   * specified
+   */
+  public removeAll(type?: EventType) {
+    if (!type) {
+      this.listeners.splice(0, this.listeners.length);
+    } else {
+      this.listeners
+        .filter((l) => l.type === type)
+        .forEach((l) => this.remove(l));
+    }
+  }
+
+  // Fires an event
+  public fire(event: Event): void {
+    const eventListeners = this.getListeners(event.type);
+    eventListeners.forEach((listener) => listener.callback(event));
+  }
+}
+
+// #endregion
+
+// #region Manages a queue of tasks
+
+// A task in the queue; will fire the action when the queue is processed; will
+// also optionally fire an event.
+export interface Task {
+  action?: VoidCallback;
+  event?: Event;
+}
+
+// Manages a queue of tasks
+class TaskQueueManager {
+  private queue: Task[] = [];
+
+  constructor(private eventManager: EventManager) {}
+
+  // Adds a task top the queue
+  public add(task: Task): void {
+    this.queue.push(task);
+  }
+
+  // Processes all tasks in the queue
+  public process(): void {
+    while (this.queue.length > 0) {
+      const task = this.queue.shift();
+      if (task?.action) {
+        task.action();
+      }
+      if (task?.event) {
+        this.eventManager.fire(task.event);
+      }
+    }
+  }
+}
+
+// #endregion
+
+// #region Audio
+
+enum SystemAudioStatus {
+  AVAILABLE,
+  UNAVAILABLE,
+}
+
+// Class to handle audio context availability and status changes
+class AudioManager extends EventManager {
+  private _started: boolean = false;
+  private _enabled: boolean = false;
+
+  private _status: SystemAudioStatus = SystemAudioStatus.UNAVAILABLE;
+  private _audioContext: AudioContext;
+
+  private async delay(time: number) {
+    return new Promise((resolve) => setTimeout(resolve, time));
+  }
+
+  private async timeout() {
+    return new Promise((_, reject) => setTimeout(reject, 50));
+  }
+
+  // Alerts animations on status changes and removes the listeners to avoid alerting twice.
+  private reportToListeners() {
+    this.fire({ type: EventType.AudioStatusChange });
+    this.removeAll();
+  }
+
+  /**
+   * The audio context has been resolved.
+   * Alert any listeners that we can now play audio.
+   * Rive will now play audio at the configured volume.
+   */
+  private async enableAudio() {
+    if (!this._enabled) {
+      this._enabled = true;
+      this._status = SystemAudioStatus.AVAILABLE;
+      this.reportToListeners();
+    }
+  }
+
+  /**
+   * Check if we are able to play audio.
+   *
+   * We currently check the audio context, when resume() returns before a timeout we know that the
+   * audio context is running and we can enable audio.
+   */
+  private async testAudio() {
+    if (
+      this._status === SystemAudioStatus.UNAVAILABLE &&
+      this._audioContext !== null
+    ) {
+      // if the audio context is not available, it will never resume,
+      // so the timeout will throw after 50ms and a new cycle will start
+      try {
+        await Promise.race([this._audioContext.resume(), this.timeout()]);
+        this.enableAudio();
+      } catch {
+        // we expect the promise race to timeout, which we ignore.
+      }
+    }
+  }
+
+  /**
+   * Establish audio for use with rive.
+   * We both test if we can use audio intermittently and listen for user interaction.
+   * The aim is to enable audio playback as soon as the browser allows this.
+   */
+  private async _establishAudio() {
+    if (!this._started) {
+      this._started = true;
+      // If window doesn't exist we assume they are not in a browser context
+      // so audio will not be blocked
+      if (typeof window == "undefined") {
+        this.enableAudio();
+      } else {
+        this._audioContext = new AudioContext();
+        this.listenForUserAction();
+        while (this._status === SystemAudioStatus.UNAVAILABLE) {
+          await this.testAudio();
+          await this.delay(1000);
+        }
+      }
+    }
+  }
+
+  private listenForUserAction() {
+    // NOTE: AudioContexts are ready immediately if requested in a ui callback
+    // we *could* re request one in this listener.
+    const _clickListener = async () => {
+      // note this has "better" results than calling `await this.testAudio()`
+      // as we force audio to be enabled in the current thread, rather than chancing
+      // the thread to be passed over for some other async context
+
+      this.enableAudio();
+    };
+    // NOTE: we should test this on mobile/pads
+    document.addEventListener("pointerdown", _clickListener, {
+      once: true,
+    });
+  }
+
+  /**
+   * Establish the audio context for rive, this lets rive know that we can play audio.
+   */
+  public async establishAudio() {
+    this._establishAudio();
+  }
+
+  public get systemVolume() {
+    if (this._status === SystemAudioStatus.UNAVAILABLE) {
+      // We do an immediate test to avoid depending on the delay of the running test
+      this.testAudio();
+      return 0;
+    }
+    return 1;
+  }
+
+  public get status(): SystemAudioStatus {
+    return this._status;
+  }
+}
+
+const audioManager = new AudioManager();
+
+// #endregion
+
+// #region Observers
+
+type ObservedObject = {
+  onResize: Function;
+  element: HTMLCanvasElement;
+};
+
+type MyResizeObserverType = {
+  observe: Function;
+  unobserve: Function;
+  disconnect: Function;
+};
+
+class FakeResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+const MyResizeObserver = globalThis.ResizeObserver || FakeResizeObserver;
+
+/**
+ * This class takes care of any observers that will be attached to an animation.
+ * It should be treated as a singleton because observers are much more performant
+ * when used for observing multiple elements by a single instance.
+ */
+
+class ObjectObservers {
+  private _elementsMap: Map<HTMLCanvasElement, ObservedObject> = new Map();
+
+  private _resizeObserver: MyResizeObserverType;
+
+  constructor() {
+    this._resizeObserver = new MyResizeObserver(this._onObserved);
+  }
+
+  /**
+   * Resize observers trigger both when the element changes its size and also when the
+   * element is added or removed from the document.
+   */
+  private _onObservedEntry = (entry: ResizeObserverEntry) => {
+    const observed = this._elementsMap.get(entry.target as HTMLCanvasElement);
+    if (observed !== null) {
+      observed.onResize(
+        entry.target.clientWidth == 0 || entry.target.clientHeight == 0,
+      );
+    } else {
+      this._resizeObserver.unobserve(entry.target);
+    }
+  };
+
+  private _onObserved = (entries: ResizeObserverEntry[]) => {
+    entries.forEach(this._onObservedEntry);
+  };
+
+  // Adds an observable element
+  public add(element: HTMLCanvasElement, onResize: Function) {
+    let observed: ObservedObject = {
+      onResize,
+      element,
+    };
+    this._elementsMap.set(element, observed);
+    this._resizeObserver.observe(element);
+    return observed;
+  }
+
+  // Removes an observable element
+  public remove(observed: ObservedObject) {
+    this._resizeObserver.unobserve(observed.element);
+    this._elementsMap.delete(observed.element);
+  }
+}
+
+const observers = new ObjectObservers();
+
+// #endregion
+
+// #region Rive
+
+let nextRiveInstanceId = 0;
+
+// Interface for the Rive static method contructor
+export interface RiveParameters {
+  canvas: HTMLCanvasElement | OffscreenCanvas; // canvas is required
+  /**
+   * URI of the `.riv` file to load. Will be fetched by the runtime. Can be used instead of
+   * `buffer` or `riveFile`.
+   */
+  src?: string;
+  /**
+   * ArrayBuffer of .riv file contents. Can be used instead of `src` or `riveFile` if you
+   * fetch the file contents yourself.
+   */
+  buffer?: ArrayBuffer;
+  /**
+   * RiveFile instance if created separately. Useful if you reuse a Rive file across multiple instances.
+   * Can be used instead of `src` or `buffer`.
+   */
+  riveFile?: RiveFile;
+  /**
+   * Name of the artboard to display.
+   */
+  artboard?: string;
+  /**
+   * Name of the state machine to play.
+   */
+  stateMachine?: string;
+  /**
+   * @deprecated Use the `stateMachine` parameter to play a state machine
+   * instead. Support for starting playback with named animations will be
+   * removed in a future major version.
+   */
+  animations?: string | string[];
+  /**
+   * @deprecated Use `stateMachine` with a single state machine name instead.
+   * Support for playing multiple state machines at once will be removed in a
+   * future major version.
+   */
+  stateMachines?: string | string[];
+  layout?: Layout;
+  autoplay?: boolean;
+  useOffscreenRenderer?: boolean;
+  /**
+   * Optional tab index to set for the canvas element if there are any Focus nodes within the graphic
+   */
+  tabIndex?: number;
+  /**
+   * Optional settings for focus behavior
+   */
+  focusOptions?: RiveFocusOptions;
+  /**
+   * Allow the runtime to automatically load assets hosted in Rive's CDN.
+   * disabled by default: the package makes no request to a third-party host.
+   */
+  enableRiveAssetCDN?: boolean;
+  /**
+   * @experimental This API is early and may encounter breaking behavior change without a major version bump
+   *
+   * When to build semantic trees and the accessibility DOM overlay.
+   * Defaults to {@link SemanticMode.Disabled}.
+   */
+  semanticsMode?: SemanticMode;
+  /**
+   * @experimental This API is early and may encounter breaking behavior change without a major version bump
+   *
+   * Optional options for the accessibility overlay container.
+   */
+  semanticsOptions?: RiveSemanticsOptions;
+  /**
+   * Turn off Rive Listeners. This means state machines that have Listeners
+   * will not be invoked, and also, no event listeners pertaining to Listeners
+   * will be attached to the <canvas> element
+   */
+  shouldDisableRiveListeners?: boolean;
+  /**
+   * For Rive Listeners, allows scrolling behavior to still occur on canvas elements
+   * when a touch/drag action is performed on touch-enabled devices. Otherwise,
+   * scroll behavior may be prevented on touch/drag actions on the canvas by default.
+   */
+  isTouchScrollEnabled?: boolean;
+  /**
+   * Enable Rive Events to be handled by the runtime. This means any special Rive Event may have
+   * a side effect that takes place implicitly.
+   *
+   * For example, if during the render loop an OpenUrlEvent is detected, the
+   * browser may try to open the specified URL in the payload.
+   *
+   * This flag is false by default to prevent any unwanted behaviors from taking place.
+   * This means any special Rive Event will have to be handled manually by subscribing to
+   * EventType.RiveEvent
+   *
+   * @deprecated Subscribing to Rive Events at runtime is deprecated and will be removed in a future
+   * major version: please use data binding instead. See
+   * the upstream Rive documentation for how to migrate.
+   */
+  automaticallyHandleEvents?: boolean;
+  /**
+   * Rive will look for a default view model and view model instance to bind to the artboard
+   */
+  autoBind?: boolean;
+  /**
+   * For Rive Listeners, dispatch a pointer exit when the pointer exits the canvas.
+   */
+  dispatchPointerExit?: boolean;
+  /**
+   * Enables multi touch support
+   */
+  enableMultiTouch?: boolean;
+  /**
+   * Enum with drawing options for optimizations
+   */
+  drawingOptions?: DrawOptimizationOptions;
+  /**
+   * @experimental This API is early and may encounter breaking behavior change without a major version bump
+   *
+   * Render GPU Canvas content, which draws through the deferred renderer.
+   *
+   * Only applies when this instance loads its own file (`src`/`buffer`), where it
+   * is forwarded to that file as {@link RiveFileParameters.enableGPUCanvas}. With a
+   * supplied `riveFile` the file's own flag wins, since a file's mode is fixed at
+   * import. False by default.
+   */
+  enableGPUCanvas?: boolean;
+  /**
+   * Emit performance.mark / performance.measure entries for load lifecycle
+   * events and the first 3 render frames. Useful for profiling Rive's
+   * contribution to load and render time in browser devtools.
+   * False by default.
+   */
+  enablePerfMarks?: boolean;
+  onLoad?: EventCallback;
+  onLoadError?: EventCallback;
+  onPlay?: EventCallback;
+  onPause?: EventCallback;
+  onStop?: EventCallback;
+  /**
+   * @deprecated Loop events are deprecated and will be removed in a future
+   * major version: they are only reported for linear animation playback, which
+   * is deprecated. Use a state machine to control playback and data binding to
+   * react to changes instead. See
+   * the upstream Rive documentation for how
+   * to migrate.
+   */
+  onLoop?: EventCallback;
+  /**
+   * @deprecated Subscribing to state change events at runtime is deprecated
+   * and will be removed in a future major version: use data binding (view model
+   * property observers) or state machine actions to react to changes from your
+   * graphic instead. See
+   * the upstream Rive documentation for how
+   * to migrate.
+   */
+  onStateChange?: EventCallback;
+  onAdvance?: EventCallback;
+  assetLoader?: AssetLoadCallback;
+  /**
+   * @deprecated Use `onLoad()` instead
+   */
+  onload?: EventCallback;
+  /**
+   * @deprecated Use `onLoadError()` instead
+   */
+  onloaderror?: EventCallback;
+  /**
+   * @deprecated Use `onPlay()` instead
+   */
+  onplay?: EventCallback;
+  /**
+   * @deprecated Use `onPause()` instead
+   */
+  onpause?: EventCallback;
+  /**
+   * @deprecated Use `onStop()` instead
+   */
+  onstop?: EventCallback;
+  /**
+   * @deprecated Use `onLoop()` instead
+   */
+  onloop?: EventCallback;
+  /**
+   * @deprecated Use `onStateChange()` instead
+   */
+  onstatechange?: EventCallback;
+}
+
+// Interface to Rive.load function
+export interface RiveLoadParameters {
+  src?: string;
+  buffer?: ArrayBuffer;
+  riveFile?: RiveFile;
+  autoplay?: boolean;
+  autoBind?: boolean;
+  artboard?: string;
+  /**
+   * Name of the state machine to play.
+   */
+  stateMachine?: string;
+  /**
+   * @deprecated Use the `stateMachine` parameter to play a state machine
+   * instead. Support for starting playback with named animations will be
+   * removed in a future major version.
+   */
+  animations?: string | string[];
+  /**
+   * @deprecated Use `stateMachine` with a single state machine name instead.
+   * Support for playing multiple state machines at once will be removed in a
+   * future major version.
+   */
+  stateMachines?: string | string[];
+  useOffscreenRenderer?: boolean;
+  shouldDisableRiveListeners?: boolean;
+  tabIndex?: number;
+  semanticsMode?: SemanticMode;
+  semanticsOptions?: RiveSemanticsOptions;
+  /**
+   * @experimental This API is early and may encounter breaking behavior change without a major version bump
+   *
+   * Render GPU Canvas content, which draws through the deferred renderer. Forwarded
+   * to the file this instance loads; with a supplied `riveFile` the file's flag wins.
+   * False by default.
+   */
+  enableGPUCanvas?: boolean;
+}
+
+// Interface ot Rive.reset function
+export interface RiveResetParameters {
+  artboard?: string;
+  /**
+   * Name of the state machine to play.
+   */
+  stateMachine?: string;
+  /**
+   * @deprecated Use the `stateMachine` parameter to play a state machine
+   * instead. Support for starting playback with named animations will be
+   * removed in a future major version.
+   */
+  animations?: string | string[];
+  /**
+   * @deprecated Use `stateMachine` with a single state machine name instead.
+   * Support for playing multiple state machines at once will be removed in a
+   * future major version.
+   */
+  stateMachines?: string | string[];
+  autoplay?: boolean;
+  autoBind?: boolean;
+}
+// Interface to RiveFile.load function
+export interface RiveFileParameters {
+  src?: string;
+  buffer?: ArrayBuffer;
+  assetLoader?: AssetLoadCallback;
+  enableRiveAssetCDN?: boolean;
+  onLoad?: EventCallback;
+  onLoadError?: EventCallback;
+  /**
+   * Emit performance.mark / performance.measure entries for load lifecycle
+   * events. False by default.
+   */
+  enablePerfMarks?: boolean;
+  /**
+   * @experimental This API is early and may encounter breaking behavior change without a major version bump
+   *
+   * Render GPU Canvas content in this file, importing it through a deferred
+   * rendering session.
+   *
+   * Fixed at import and has no setter: a file's resources are typed by the factory
+   * that made them and can never switch. The session records for the one canvas that
+   * displays the file, so a second Rive instance sharing this file re-imports it into
+   * a session of its own.
+   * False by default.
+   */
+  enableGPUCanvas?: boolean;
+}
+
+/**
+ * Resolves which animation/state machine names playback should start with.
+ * The `stateMachine` parameter takes priority; the deprecated plural
+ * `animations`/`stateMachines` parameters apply only when it
+ * is not provided.
+ */
+const resolveStartingPlayback = ({
+  stateMachine,
+  animations,
+  stateMachines,
+}: {
+  stateMachine?: string;
+  animations?: string | string[];
+  stateMachines?: string | string[];
+}): {
+  startingAnimationNames: string[];
+  startingStateMachineNames: string[];
+} => {
+  if (animations !== undefined) {
+    warnOnce(
+      DeprecationKeys.animationsParam,
+      "The `animations` parameter is deprecated and will be removed in a future major version: please use the `stateMachine` parameter to play a state machine instead.",
+    );
+  }
+  if (stateMachines !== undefined) {
+    warnOnce(
+      DeprecationKeys.stateMachinesParam,
+      "The `stateMachines` parameter is deprecated: please use `stateMachine` with a single state machine name instead.",
+    );
+  }
+  if (stateMachine) {
+    return {
+      startingAnimationNames: [],
+      startingStateMachineNames: [stateMachine],
+    };
+  }
+  return {
+    startingAnimationNames: mapToStringArray(animations),
+    startingStateMachineNames: mapToStringArray(stateMachines),
+  };
+};
+
+export class RiveFile implements rc.FinalizableTarget {
+  // Error message for missing source or buffer
+  private static readonly missingErrorMessage: string =
+    "Rive source file or data buffer required";
+
+  // Error message for file load error
+  private static readonly fileLoadErrorMessage: string =
+    "The file failed to load";
+
+  // A url to a Rive file; may be undefined if a buffer is specified
+  private src: string;
+
+  // Raw Rive file data; may be undefined if a src is specified
+  private buffer: ArrayBuffer;
+
+  // Wasm runtime
+  private runtime: rc.RiveCanvas;
+
+  // Runtime file
+  private file: rc.File;
+
+  // AssetLoadCallback: allows customizing asset loading for images and fonts.
+  private assetLoader: AssetLoadCallback;
+
+  // Allow the runtime to automatically load assets hosted in Rive's runtime.
+  private enableRiveAssetCDN: boolean = false;
+
+  // When true, emits performance.mark/measure entries during RiveFile load.
+  private enablePerfMarks: boolean = false;
+
+  // Holds event listeners
+  private eventManager: EventManager;
+
+  private referenceCount: number = 0;
+
+  private destroyed: boolean = false;
+
+  public selfUnref: boolean = false;
+
+  private bindableArtboards: BindableArtboard[] = [];
+
+  // Deferred rendering was requested; the session may still be null if this
+  // build has no deferred support.
+  private deferred: boolean = false;
+
+  // The session this file imported through, null when immediate. Owned here:
+  // it has to outlive the file, so it is deleted after the file is released.
+  private session: rc.DeferredSession | null = null;
+
+  // Attaching is once per session: a detached session can never replay again,
+  // so a claimed file re-imports for the next instance implicitly. Mirrors the native
+  // latch (WebGL2DeferredSession::everBound, C2DDeferredSession::claim).
+  private _sessionClaimed: boolean = false;
+
+  // Releasing this file has to be deterministic once a session owns its
+  // resources, so the finalizer is disarmed rather than left to GC.
+  private fileFinalizer: FileFinalizer | null = null;
+
+  private boundElsewhereWarned: boolean = false;
+
+  // Deferred support is per build, so the warning is per page, not per file.
+  private static deferredUnsupportedWarned: boolean = false;
+
+  constructor(params: RiveFileParameters) {
+    this.src = params.src;
+    this.buffer = params.buffer;
+    this.deferred = !!params.enableGPUCanvas;
+
+    if (params.assetLoader) this.assetLoader = params.assetLoader;
+    this.enableRiveAssetCDN =
+      typeof params.enableRiveAssetCDN == "boolean"
+        ? params.enableRiveAssetCDN
+        : false;
+    this.enablePerfMarks = !!params.enablePerfMarks;
+    if (this.enablePerfMarks) RuntimeLoader.enablePerfMarks = true;
+
+    // New event management system
+    this.eventManager = new EventManager();
+    if (params.onLoad) this.on(EventType.Load, params.onLoad);
+    if (params.onLoadError) this.on(EventType.LoadError, params.onLoadError);
+  }
+
+  private releaseFile() {
+    // Release here rather than leaving it to the finalization registry. The
+    // native file frees GL-backed resources when its last reference goes, and
+    // callers reach this with the renderer's context current; a finalizer runs
+    // with none, so those deletes would silently do nothing.
+    this.fileFinalizer?.release();
+    this.file?.unref();
+    this.fileFinalizer = null;
+    this.file = null;
+  }
+
+  private releaseSession() {
+    // Known limitation: cleanup() on a file an instance is still drawing
+    // deletes the session under it. A RiveFile's creator holds no reference of
+    // its own, so their cleanup() can take the count to zero.
+    this.session?.delete();
+    this.session = null;
+  }
+
+  private releaseBindableArtboards() {
+    this.bindableArtboards.forEach((bindableArtboard) =>
+      bindableArtboard.destroy(),
+    );
+  }
+
+  private async initData() {
+    if (this.src && !this.buffer) {
+      try {
+        this.buffer = await loadRiveFile(this.src);
+      } catch (error) {
+        if (error instanceof Error) {
+          throw error;
+        }
+        throw new RiveError(RiveFile.fileLoadErrorMessage);
+      }
+    }
+    if (this.destroyed) {
+      return;
+    }
+    if (this.deferred && this.session === null) {
+      this.session = RiveFile.makeDeferredSession(this.runtime);
+    }
+    let loader;
+    if (this.assetLoader) {
+      // The session reaches out of band assets through here: a resource made
+      // by any other factory is dropped when this file draws.
+      const loaderWrapper = new CustomFileAssetLoaderWrapper(
+        this.runtime,
+        this.assetLoader,
+        this.session,
+      );
+      loader = loaderWrapper.assetLoader;
+    }
+    // Load the Rive file
+    if (this.enablePerfMarks) performance.mark('rive:file-load:start');
+    try {
+      this.file = await this.runtime.load(
+        new Uint8Array(this.buffer),
+        loader,
+        this.enableRiveAssetCDN,
+        this.session,
+      );
+    } catch (error) {
+      // The finalizer that would reclaim the session is only registered once
+      // the import succeeds, so a failed load has to release it here.
+      this.releaseSession();
+      throw error;
+    }
+    if (this.enablePerfMarks) {
+      performance.mark('rive:file-load:end');
+      performance.measure('rive:file-load', 'rive:file-load:start', 'rive:file-load:end');
+    }
+    if (this.destroyed) {
+      this.releaseFile();
+      this.releaseSession();
+      return;
+    }
+    if (this.file === null) {
+      // A malformed file resolves to null rather than rejecting. Release the
+      // session now: a finalizer for a file that does not exist would keep it
+      // alive until GC, or for as long as the caller holds the failed RiveFile.
+      this.releaseSession();
+      this.fireLoadError(RiveFile.fileLoadErrorMessage);
+      return;
+    }
+    // The finalizer carries the session too: a RiveFile that becomes
+    // unreachable without cleanup() would otherwise unref its file on GC and
+    // strand the session, which nothing else reclaims.
+    const fileFinalizer = new FileFinalizer(this.file, this.session);
+    this.fileFinalizer = fileFinalizer;
+    finalizationRegistry.register(this, fileFinalizer);
+
+    this.eventManager.fire({
+      type: EventType.Load,
+      data: this,
+    });
+  }
+
+  private async loadRiveFileBytes(): Promise<ArrayBuffer> {
+    if (this.enablePerfMarks) performance.mark('rive:fetch-riv:start');
+    const bufferPromise: Promise<ArrayBuffer> = this.src
+      ? loadRiveFile(this.src)
+      : Promise.resolve(this.buffer);
+    if (this.enablePerfMarks && this.src) {
+      bufferPromise.then(() => {
+        performance.mark('rive:fetch-riv:end');
+        performance.measure('rive:fetch-riv', 'rive:fetch-riv:start', 'rive:fetch-riv:end');
+      })
+    }
+    return bufferPromise;
+  }
+
+  private async loadRuntime(): Promise<rc.RiveCanvas> {
+    if (this.enablePerfMarks) performance.mark('rive:await-wasm:start');
+    const runtimePromise = RuntimeLoader.awaitInstance();
+    if (this.enablePerfMarks) {
+      runtimePromise.then(() => {
+        performance.mark('rive:await-wasm:end');
+        performance.measure('rive:await-wasm', 'rive:await-wasm:start', 'rive:await-wasm:end');
+      })
+    }
+    return runtimePromise;
+  }
+
+  public async init() {
+    // If no source file url specified, it's a bust
+    if (!this.src && !this.buffer) {
+      this.fireLoadError(RiveFile.missingErrorMessage);
+      return;
+    }
+
+    try {
+      // Kick off the .riv file fetch and WASM module init simultaneously —
+      // they have no dependency on each other so both can be in-flight at once.
+     const [bufferResolved, runtimeResolved] = await Promise.all([this.loadRiveFileBytes(), this.loadRuntime()]);
+
+      if (this.destroyed) {
+        return;
+      }
+      // .riv file buffer and WASM runtime instance
+      this.buffer = bufferResolved;
+      this.runtime = runtimeResolved;
+
+      if (this.enablePerfMarks) performance.mark('rive:init-data:start');
+      await this.initData();
+      if (this.enablePerfMarks) {
+        performance.mark('rive:init-data:end');
+        performance.measure('rive:init-data', 'rive:init-data:start', 'rive:init-data:end');
+      }
+    } catch (error) {
+      this.fireLoadError(
+        error instanceof Error ? error.message : RiveFile.fileLoadErrorMessage,
+      );
+    }
+  }
+
+  private fireLoadError(message: string): void {
+    this.eventManager.fire({
+      type: EventType.LoadError,
+      data: message,
+    });
+
+    throw new RiveError(message);
+  }
+
+  /**
+   * Subscribe to Rive-generated events
+   * @param type the type of event to subscribe to
+   * @param callback callback to fire when the event occurs
+   */
+  public on(type: EventType, callback: EventCallback) {
+    this.eventManager.add({
+      type: type,
+      callback: callback,
+    });
+  }
+
+  /**
+   * Unsubscribes from a Rive-generated event
+   * @param type the type of event to unsubscribe from
+   * @param callback the callback to unsubscribe
+   */
+  public off(type: EventType, callback: EventCallback) {
+    this.eventManager.remove({
+      type: type,
+      callback: callback,
+    });
+  }
+
+  public cleanup() {
+    this.referenceCount -= 1;
+    if (this.referenceCount <= 0) {
+      this.removeAllRiveEventListeners();
+      this.releaseFile();
+      this.releaseBindableArtboards();
+      // Everything imported through the session is gone; the session can go.
+      this.releaseSession();
+      this.destroyed = true;
+    }
+  }
+
+  // Deferred is only compiled into some runtime builds, so feature detect it
+  // and degrade to an immediate import rather than failing the load.
+  private static makeDeferredSession(
+    runtime: rc.RiveCanvas,
+  ): rc.DeferredSession | null {
+    const session = runtime.makeDeferredSession?.() ?? null;
+    if (session === null && !RiveFile.deferredUnsupportedWarned) {
+      RiveFile.deferredUnsupportedWarned = true;
+      console.warn(
+        "Rive: `enableGPUCanvas: true` was ignored because this runtime build has no GPU Canvas support; importing in immediate mode. Use the @tweenora/webgl2 build with deferred rendering compiled in.",
+      );
+    }
+    return session;
+  }
+
+  /**
+   * @internal The deferred session this file imported through, or null if it
+   * was imported in immediate mode.
+   */
+  public get deferredSession(): rc.DeferredSession | null {
+    return this.session;
+  }
+
+  /**
+   * @internal Whether deferred was asked for, even when this build could not
+   * honor it and imported immediate.
+   */
+  public get deferredRequested(): boolean {
+    return this.deferred;
+  }
+
+  /**
+   * @internal Whether this file's session has ever been attached to a renderer.
+   * Attaching is once per session, so a claimed file re-imports for the next
+   * instance even after the renderer it was bound to is gone.
+   */
+  public get sessionClaimed(): boolean {
+    return this._sessionClaimed;
+  }
+
+  /**
+   * @internal Marks this file's session as spent. There is no matching release:
+   * a session that has been attached can never replay for another renderer.
+   */
+  public claimSession(): void {
+    this._sessionClaimed = true;
+  }
+
+  /**
+   * @internal One warning per file however many instances collide on it.
+   */
+  public warnBoundElsewhereOnce(): void {
+    if (this.boundElsewhereWarned) {
+      return;
+    }
+    this.boundElsewhereWarned = true;
+    console.warn(
+      "Rive: this deferred RiveFile is already bound to another Rive instance's canvas, and a deferred session cannot span canvases. Re-importing the file for this instance (an extra parse of the retained buffer, no extra network request).",
+    );
+  }
+
+  /**
+   * @internal Re-imports this file from its retained buffer into a mode of its
+   * own. The copy is owned by whoever asked for it and never joins this file's
+   * reference count.
+   */
+  public async reimport(deferred: boolean): Promise<RiveFile> {
+    const copy = new RiveFile({
+      buffer: this.buffer,
+      assetLoader: this.assetLoader,
+      enableRiveAssetCDN: this.enableRiveAssetCDN,
+      enablePerfMarks: this.enablePerfMarks,
+      enableGPUCanvas: deferred,
+    });
+    await copy.init();
+    return copy;
+  }
+
+  /**
+   * Unsubscribes all Rive listeners from an event type, or everything if no type is
+   * given
+   * @param type the type of event to unsubscribe from, or all types if
+   * undefined
+   */
+  public removeAllRiveEventListeners(type?: EventType) {
+    this.eventManager.removeAll(type);
+  }
+
+  public getInstance(): rc.File {
+    if (this.file !== null) {
+      this.referenceCount += 1;
+      return this.file;
+    }
+  }
+
+  public destroyIfUnused() {
+    if (this.referenceCount <= 0) {
+      this.cleanup();
+    }
+  }
+
+  private createBindableArtboard(
+    nativeBindableArtboard: rc.BindableArtboard,
+  ): BindableArtboard | null {
+    if (nativeBindableArtboard != null) {
+      const bindableArtboard = new BindableArtboard(nativeBindableArtboard);
+      createFinalization(bindableArtboard, bindableArtboard.nativeArtboard);
+      this.bindableArtboards.push(bindableArtboard);
+      return bindableArtboard;
+    }
+    return null;
+  }
+
+  /**
+   * @deprecated This function is deprecated. For better stability and memory management
+   * use `getBindableArtboard()` instead.
+   * @param {string} name - The name of the artboard.
+   * @returns {Artboard} The artboard to bind to.
+   */
+  public getArtboard(name: string): Artboard | null {
+    const nativeArtboard = this.file.artboardByName(name);
+    if (nativeArtboard != null) {
+      return new Artboard(nativeArtboard, this);
+    }
+  }
+
+  public getBindableArtboard(name: string): BindableArtboard | null {
+    const nativeArtboard = this.file.bindableArtboardByName(name);
+    return this.createBindableArtboard(nativeArtboard);
+  }
+
+  public getDefaultBindableArtboard(): BindableArtboard | null {
+    const nativeArtboard = this.file.bindableArtboardDefault();
+    return this.createBindableArtboard(nativeArtboard);
+  }
+
+  public internalBindableArtboardFromArtboard(
+    artboard: rc.Artboard,
+  ): BindableArtboard | null {
+    const nativeBindableArtboard =
+      this.file.internalBindableArtboardFromArtboard(artboard);
+    return this.createBindableArtboard(nativeBindableArtboard);
+  }
+
+  public viewModelByName(name: string): ViewModel | null {
+    const viewModel = this.file.viewModelByName(name);
+    if (viewModel !== null) {
+      return new ViewModel(viewModel);
+    }
+    return null;
+  }
+
+  /**
+   * @returns the names of the file's global view models, in file order.
+   */
+  public globalViewModelNames(): string[] {
+    return this.file.globalViewModelNames();
+  }
+}
+
+export class Rive {
+  // Canvas in which to render the artboard
+  private readonly canvas: HTMLCanvasElement | OffscreenCanvas;
+
+  // A url to a Rive file; may be undefined if a buffer is specified
+  private src: string;
+
+  // Raw Rive file data; may be undefined if a src is specified
+  private buffer: ArrayBuffer;
+
+  // The layout for rendering in the canvas
+  private _layout: Layout;
+
+  // The runtime renderer
+  private renderer: rc.WrappedRenderer;
+
+  // Tracks if a Rive file is loaded
+  private loaded = false;
+
+  // Tracks if a Rive file is destroyed
+  private destroyed = false;
+
+  // Reference of an object that handles any observers for the animation
+  private _observed: ObservedObject | null = null;
+
+  /**
+   * Tracks if a Rive file is loaded; we need this in addition to loaded as some
+   * commands (e.g. contents) can be called as soon as the file is loaded.
+   * However, playback commands need to be queued and run in order once initial
+   * animations and autoplay has been sorted out. This applies to play, pause,
+   * and start.
+   */
+  private readyForPlaying = false;
+
+  // Wasm runtime
+  private runtime: rc.RiveCanvas;
+
+  // Deferred rendering was requested for this instance. The file it renders
+  // has the final say, since a file's mode is fixed at import.
+  private deferredRenderer: boolean = false;
+
+  // Whether this instance imported the file in `riveFile` (true) or the caller
+  // supplied it (false). Only a file we imported may be released without a
+  // matching getInstance(): a caller's file is theirs however this init ends.
+  private ownsRiveFile: boolean = false;
+
+  // Runtime artboard
+  private artboard: rc.Artboard | null = null;
+
+  // place to clear up pointer/touch event listeners
+  private eventCleanup: VoidCallback | null = null;
+
+  // Manages keyboard and DOM-focus interactions for the canvas.
+  private _keyboardInteractions: KeyboardInteractions | null = null;
+
+  // Runtime file
+  private file: rc.File;
+
+  // Rive file instance
+  private riveFile: RiveFile;
+
+  // Holds event listeners
+  private eventManager: EventManager;
+
+  // Manages the loading task queue
+  private taskQueue: TaskQueueManager;
+
+  // Animator: manages animations and state machines
+  private animator: Animator;
+
+  // AssetLoadCallback: allows customizing asset loading for images and fonts.
+  private assetLoader: AssetLoadCallback;
+
+  // Error message for missing source or buffer
+  private static readonly missingErrorMessage: string =
+    "Rive source file or data buffer required";
+
+  // Error message for removed rive file
+  private static readonly cleanupErrorMessage: string =
+    "Attempt to use file after calling cleanup.";
+
+  /**
+   * Deprecation warnings to silence, by {@link DeprecationId}. Each warning
+   * prints the id needed to silence it, so you can copy it out of the console.
+   *
+   * ```ts
+   * Rive.suppressDeprecationWarnings = ["rive-events", "text-runs"];
+   * ```
+   *
+   * Assigning replaces the whole list.
+   * There is no option to silence everything
+   */
+  public static get suppressDeprecationWarnings(): readonly DeprecationId[] {
+    return Object.freeze(Array.from(suppressedDeprecations));
+  }
+
+  public static set suppressDeprecationWarnings(ids: readonly DeprecationId[]) {
+    setSuppressedDeprecations(ids);
+  }
+
+  private shouldDisableRiveListeners = false;
+
+  private automaticallyHandleEvents = false;
+
+  private dispatchPointerExit = true;
+
+  // Allow all pointers to be passed to the runtime
+  private enableMultiTouch = false;
+
+  // Allow the runtime to automatically load assets hosted in Rive's runtime.
+  private enableRiveAssetCDN = false;
+
+  private semanticsMode: SemanticMode = SemanticMode.Disabled;
+
+  private semanticsOptions: RiveSemanticsOptions = {
+    riveCanvasLabel: "Animation",
+  };
+
+  /** True when this instance may drain semantics and render the overlay. */
+  private _semanticsActive = false;
+
+  // Keep a local value of the set volume to update it asynchronously
+  private _volume = 1;
+
+  // Keep a local value of the set width to update it asynchronously
+  private _artboardWidth: number | undefined = undefined;
+
+  // Keep a local value of the set height to update it asynchronously
+  private _artboardHeight: number | undefined = undefined;
+
+  // Keep a local value of the device pixel ratio used in rendering and canvas/artboard resizing
+  private _devicePixelRatioUsed = 1;
+
+  // Whether the canvas element's size is 0
+  private _hasZeroSize = false;
+
+  // Whether a draw operation needs to be forced
+  private _needsRedraw = false;
+
+  // Canvas width and height. Values are lazily updated so they might
+  // not be in sync with current canvas size.
+  private _currentCanvasWidth = 0;
+  private _currentCanvasHeight = 0;
+
+  // Audio event listener
+  private _audioEventListener: EventListener | null = null;
+
+  // draw method bound to the class
+  private _boundDraw: (t: number) => void | null = null;
+
+  // Page visibility handler — prevents state machine advancing / rAF from being invoked with large time delta
+  // when the browser tab is switched back to after being hidden.
+  private _pageVisibilityHandler: (() => void) | null = null;
+  // True only when the page visibility handler itself cancelled an active frame.
+  // Set by stopRendering(), cleared by startRendering(). Prevents the
+  // visibilitychange handler from restarting a rendering loop the caller intentionally stopped.
+  private _explicitlyStoppedRendering = false;
+
+  private _viewModelInstance: ViewModelInstance | null = null;
+  // User-provided global view model instances, keyed by their global view
+  // model's name. Globals not present here are still driven by the default
+  // instances the runtime seeds; the getter only surfaces instances the user
+  // has explicitly set.
+  private _globalViewModelInstances: Map<string, ViewModelInstance> = new Map();
+  private _dataEnums: DataEnum[] | null = null;
+
+  private _tabIndex: number | null = null;
+  private _prevHasFocus = false;
+  private _prevWantsTextInputSession = false;
+  // Pointer-down defers the proxy focus: mousedown's default would refocus the canvas and
+  // touchstart isn't user activation; pointer-up focuses it.
+  private _inPointerDownDrain = false;
+  private _focusOptions: RiveFocusOptions = {
+    allowFocusInterrupt: false,
+  };
+
+  // Tracks the semantic tree for the given graphic
+  private _semanticTree: SemanticTreeModel | null = null;
+  private _accessibilityOverlay: AccessibilityOverlay | null = null;
+  /**
+   * True when an input to the accessibility overlay's artboard→canvas transform
+   * (layout fit/alignment/bounds, devicePixelRatio, or layout scale) has changed
+   * and the matrix must be recomputed on the next overlay update. Avoids calling
+   * computeAlignment every frame when only the semantic tree changed.
+   */
+  private _overlayTransformDirty = true;
+  // Module-level counter for unique instance IDs for semantic overlay containers
+  private readonly _instanceId = `${nextRiveInstanceId++}`;
+
+  private drawOptimization: DrawOptimizationOptions =
+    DrawOptimizationOptions.DrawOnChanged;
+
+  // When true, emits performance.mark/measure entries for load and render.
+  private enablePerfMarks: boolean = false;
+
+  // Durations to generate a frame for the last second. Used for performance profiling.
+  public durations: number[] = [];
+  public frameTimes: number[] = [];
+  public frameCount = 0;
+  public isTouchScrollEnabled = false;
+
+  constructor(params: RiveParameters) {
+    this._boundDraw = this.draw.bind(this);
+    if (typeof document !== 'undefined') {
+      this._pageVisibilityHandler = this._onPageVisibilityChange.bind(this);
+      document.addEventListener('visibilitychange', this._pageVisibilityHandler);
+    }
+    this.canvas = params.canvas;
+    if (params.canvas.constructor === HTMLCanvasElement) {
+      this._observed = observers.add(
+        this.canvas as HTMLCanvasElement,
+        this.onCanvasResize,
+      );
+    }
+    this._currentCanvasWidth = this.canvas.width;
+    this._currentCanvasHeight = this.canvas.height;
+    this.src = params.src;
+    this.buffer = params.buffer;
+    this.riveFile = params.riveFile;
+    this.layout = params.layout ?? new Layout();
+    this.shouldDisableRiveListeners = !!params.shouldDisableRiveListeners;
+    this.isTouchScrollEnabled = !!params.isTouchScrollEnabled;
+    if (params.automaticallyHandleEvents) {
+      warnOnce(
+        DeprecationKeys.riveEvents,
+        "The `automaticallyHandleEvents` parameter is deprecated. " +
+          riveEventsDeprecationWarning,
+      );
+    }
+    this.automaticallyHandleEvents = !!params.automaticallyHandleEvents;
+    this.dispatchPointerExit =
+      params.dispatchPointerExit === false
+        ? params.dispatchPointerExit
+        : this.dispatchPointerExit;
+    this.enableMultiTouch = !!params.enableMultiTouch;
+    this.drawOptimization = params.drawingOptions ?? this.drawOptimization;
+    this.enableRiveAssetCDN =
+      params.enableRiveAssetCDN === undefined
+        ? false
+        : params.enableRiveAssetCDN;
+    this.enablePerfMarks = !!params.enablePerfMarks;
+    if (this.enablePerfMarks) RuntimeLoader.enablePerfMarks = true;
+    this._focusOptions = params.focusOptions ?? this._focusOptions;
+    this._tabIndex = params.tabIndex ?? null;
+    this.deferredRenderer = !!params.enableGPUCanvas;
+
+    // New event management system
+    this.eventManager = new EventManager();
+    if (params.onLoad) this.on(EventType.Load, params.onLoad);
+    if (params.onLoadError) this.on(EventType.LoadError, params.onLoadError);
+    if (params.onPlay) this.on(EventType.Play, params.onPlay);
+    if (params.onPause) this.on(EventType.Pause, params.onPause);
+    if (params.onStop) this.on(EventType.Stop, params.onStop);
+    if (params.onLoop) this.on(EventType.Loop, params.onLoop);
+    if (params.onStateChange)
+      this.on(EventType.StateChange, params.onStateChange);
+    if (params.onAdvance) this.on(EventType.Advance, params.onAdvance);
+
+    /**
+     * @deprecated Use camelCase'd versions instead.
+     */
+    if (params.onload && !params.onLoad) this.on(EventType.Load, params.onload);
+    if (params.onloaderror && !params.onLoadError)
+      this.on(EventType.LoadError, params.onloaderror);
+    if (params.onplay && !params.onPlay) this.on(EventType.Play, params.onplay);
+    if (params.onpause && !params.onPause)
+      this.on(EventType.Pause, params.onpause);
+    if (params.onstop && !params.onStop) this.on(EventType.Stop, params.onstop);
+    if (params.onloop && !params.onLoop) this.on(EventType.Loop, params.onloop);
+    if (params.onstatechange && !params.onStateChange)
+      this.on(EventType.StateChange, params.onstatechange);
+
+    /**
+     * Asset loading
+     */
+    if (params.assetLoader) this.assetLoader = params.assetLoader;
+
+    // Hook up the task queue
+    this.taskQueue = new TaskQueueManager(this.eventManager);
+
+    this.init({
+      src: this.src,
+      buffer: this.buffer,
+      riveFile: this.riveFile,
+      autoplay: params.autoplay,
+      autoBind: params.autoBind,
+      stateMachine: params.stateMachine,
+      animations: params.animations,
+      stateMachines: params.stateMachines,
+      artboard: params.artboard,
+      useOffscreenRenderer: params.useOffscreenRenderer,
+      tabIndex: params.tabIndex,
+      semanticsMode: params.semanticsMode,
+      semanticsOptions: params.semanticsOptions,
+      enableGPUCanvas: this.deferredRenderer,
+    });
+  }
+
+  public get viewModelCount(): number {
+    return this.file.viewModelCount();
+  }
+
+  // Alternative constructor to build a Rive instance from an interface/object
+  public static new(params: RiveParameters): Rive {
+    warnOnce(
+      DeprecationKeys.legacyConstructors,
+      "This function is deprecated: please use `new Rive({})` instead",
+    );
+    return new Rive(params);
+  }
+
+  /**
+   * @experimental Turns on semantics and the accessibility overlay for this
+   * instance. Idempotent; safe to call before or after load. Use this to drive
+   * a consumer-controlled accessibility toggle when constructed with the
+   * default {@link SemanticMode.Disabled}.
+   */
+  public enableSemantics(): void {
+    this.semanticsMode = SemanticMode.Enabled;
+    this.activateSemantics();
+  }
+
+  private activateSemantics(): void {
+    if (this._semanticsActive || this.semanticsMode === SemanticMode.Disabled) {
+      return;
+    }
+    this._semanticsActive = true;
+    this.syncSemanticsOnStateMachines();
+  }
+
+  private syncSemanticsOnStateMachines(): void {
+    if (!this._semanticsActive || !this.animator) {
+      return;
+    }
+    for (const stateMachine of this.animator.stateMachines) {
+      stateMachine.enableSemantics();
+    }
+  }
+
+  /**
+   * Tears down the semantic tree and accessibility overlay. The overlay captures the
+   * active state machine in its action closures, so it must not outlive the
+   * instances it points at (reset/load delete them)
+   */
+  private cleanupSemantics(): void {
+    this._semanticTree = null;
+    if (this._accessibilityOverlay) {
+      this._accessibilityOverlay.destroy();
+      this._accessibilityOverlay = null;
+    }
+  }
+
+  // Event handler for when audio context becomes available
+  private onSystemAudioChanged() {
+    this.volume = this._volume;
+  }
+
+  private onCanvasResize = (hasZeroSize: boolean) => {
+    const toggledDisplay = this._hasZeroSize !== hasZeroSize;
+    this._hasZeroSize = hasZeroSize;
+    if (!hasZeroSize) {
+      if (toggledDisplay) {
+        this.resizeDrawingSurfaceToCanvas();
+      }
+    } else if (!this._layout.maxX || !this._layout.maxY) {
+      this.resizeToCanvas();
+    }
+  };
+
+  // Initializes the Rive object either from constructor or load()
+  private init({
+    src,
+    buffer,
+    riveFile,
+    stateMachine,
+    animations,
+    stateMachines,
+    artboard,
+    autoplay = false,
+    useOffscreenRenderer = false,
+    autoBind = false,
+    tabIndex,
+    semanticsMode,
+    semanticsOptions,
+    enableGPUCanvas,
+  }: RiveLoadParameters): void {
+    if (this.destroyed) {
+      return;
+    }
+    // Validated before any state changes, so a call with no source leaves a
+    // running instance untouched.
+    if (!src && !buffer && !riveFile) {
+      throw new RiveError(Rive.missingErrorMessage);
+    }
+    // Reload releases the outgoing file in the same order cleanup() uses:
+    // artboard, then the renderer's session, then the file. The artboard goes
+    // first because it holds an rcp<File> and its resources came from the
+    // session about to be released. stop() has already deleted the animation
+    // and state machine instances; reload deliberately skips cleanupInstances(),
+    // which would also drop the event listeners load() keeps in place.
+    if (this.artboard) {
+      // Free GPU-backed resources with their own context current. No-op on
+      // the canvas2d build.
+      this.renderer?.bindContext?.();
+      this.animator?.stop();
+      this.artboard.delete();
+      this.artboard = null;
+    }
+    // Detach before the session is deleted: the handle dies with it.
+    if (this.renderer) {
+      this.renderer.detachSession?.();
+    }
+    this.releaseCurrentRiveFile(/* isTeardown */ false);
+    this.src = src;
+    this.buffer = buffer;
+    this.riveFile = riveFile;
+    // initData flips this if it ends up importing the file itself.
+    this.ownsRiveFile = false;
+    // Sticky across reloads so a constructor-set flag survives; an explicit
+    // `false` still turns it off.
+    this.deferredRenderer = enableGPUCanvas ?? this.deferredRenderer;
+    this._tabIndex = tabIndex ?? null;
+    this.semanticsMode = semanticsMode ?? SemanticMode.Disabled;
+    this.semanticsOptions = semanticsOptions ?? this.semanticsOptions;
+
+    // Names of the animations and state machines that should be initialized
+    const { startingAnimationNames, startingStateMachineNames } =
+      resolveStartingPlayback({
+        stateMachine,
+        animations,
+        stateMachines,
+      });
+
+    // Ensure loaded is marked as false if loading new file
+    this.loaded = false;
+    this.readyForPlaying = false;
+
+    // Ensure the runtime is loaded
+    RuntimeLoader.awaitInstance()
+      .then((runtime) => {
+        if (this.destroyed) {
+          return;
+        }
+        this.runtime = runtime;
+
+        this.removeRiveListeners();
+        // load() reinitializes without cleanupInstances(); drop any stale overlay
+        // bound to the previous file's state machines (no-op on first construct).
+        this.cleanupSemantics();
+        this.deleteRiveRenderer();
+
+        // Get the canvas where you want to render the animation and create a renderer
+        if (this.enablePerfMarks) performance.mark('rive:make-renderer:start');
+        try {
+          // Always immediate at creation; a deferred file attaches its session
+          // to this renderer once the file has loaded.
+          this.renderer = this.runtime.makeRenderer(
+            this.canvas,
+            useOffscreenRenderer,
+          );
+          if (!this.renderer) {
+            throw new Error("Renderer is null, cannot render Rive on the canvas.");
+          }
+        } catch (e) {
+          console.error(e);
+          throw new RiveError("Unable to create the renderer, your environment may not support WebGL.");
+        }
+        if (this.enablePerfMarks) {
+          performance.mark('rive:make-renderer:end');
+          performance.measure('rive:make-renderer', 'rive:make-renderer:start', 'rive:make-renderer:end');
+        }
+
+        // Initial size adjustment based on devicePixelRatio if no width/height are
+        // specified explicitly
+        if (!(this.canvas.width || this.canvas.height)) {
+          this.resizeDrawingSurfaceToCanvas();
+        }
+
+        // Load Rive data from a source uri or a data buffer
+        this.initData(
+          artboard,
+          startingAnimationNames,
+          startingStateMachineNames,
+          autoplay,
+          autoBind,
+        )
+          .then((hasInitialized: boolean) => {
+            if (hasInitialized) {
+              return this.setupRiveListeners();
+            }
+          })
+          .catch((e) => {
+            // initData already catches RiveErrors for load issues like artboard/state machine initialization
+            // failures, so just console error and catch here so we don't double-fire the LoadError event
+            console.error(e);
+          });
+      })
+      .catch((e: Error) => { // Catching errors from loading WASM
+        this.eventManager.fire({ type: EventType.LoadError, data: e.message });
+      });
+  }
+
+  /**
+   * Setup Rive Listeners on the canvas
+   * @param riveListenerOptions - Enables TouchEvent events on the canvas. Set to true to allow
+   * touch scrolling on the canvas element on touch-enabled devices
+   * i.e. { isTouchScrollEnabled: true }
+   */
+  public setupRiveListeners(
+    riveListenerOptions?: SetupRiveListenersOptions,
+  ): void {
+    if (this.eventCleanup) {
+      this.eventCleanup();
+    }
+    this.cleanupKeyboardInteractions();
+    if (!this.shouldDisableRiveListeners) {
+      const playingStateMachines = this.animator.stateMachines.filter((sm) => sm.playing);
+      const activeStateMachines = playingStateMachines
+        .filter((sm) => this.runtime.hasListeners(sm.instance))
+        .map((sm) => sm.instance);
+      let touchScrollEnabledOption = this.isTouchScrollEnabled;
+      let dispatchPointerExit = this.dispatchPointerExit;
+      let enableMultiTouch = this.enableMultiTouch;
+      if (
+        riveListenerOptions &&
+        "isTouchScrollEnabled" in riveListenerOptions
+      ) {
+        touchScrollEnabledOption = riveListenerOptions.isTouchScrollEnabled;
+      }
+      this.eventCleanup = registerTouchInteractions({
+        canvas: this.canvas,
+        artboard: this.artboard,
+        stateMachines: activeStateMachines,
+        renderer: this.renderer,
+        rive: this.runtime,
+        fit: this._layout.runtimeFit(this.runtime),
+        alignment: this._layout.runtimeAlignment(this.runtime),
+        isTouchScrollEnabled: touchScrollEnabledOption,
+        dispatchPointerExit: dispatchPointerExit,
+        enableMultiTouch: enableMultiTouch,
+        layoutScaleFactor: this._layout.layoutScaleFactor,
+        advanceAndDrain: this.advanceAndDrainForPointer.bind(this),
+        summonKeyboard: this.summonKeyboardForGesture.bind(this),
+        isTextProxyFocused: this.isEditingHostFocused,
+      });
+
+      this.ensureKeyboardInteractions();
+    }
+  }
+
+  private isEditingHostFocused = (): boolean =>
+    this._keyboardInteractions?.isEditingHostFocused() ?? false;
+
+  // Assumes a single state machine drives focus.
+  private get focusStateMachine(): StateMachine | undefined {
+    return this.animator.stateMachines.find((sm) => sm.playing && sm.hasFocusNodes);
+  }
+
+  /**
+   * Wire keyboard interactions when a playing state machine has focus nodes.
+   * Called at listener setup and lazily each frame so late-bound bindable artboards work.
+   */
+  private ensureKeyboardInteractions(): void {
+    if (
+      this._keyboardInteractions ||
+      this.shouldDisableRiveListeners ||
+      typeof window === "undefined" ||
+      !(this.canvas instanceof HTMLCanvasElement)
+    ) {
+      return;
+    }
+
+    const smWithFocusNodes = this.focusStateMachine;
+    if (!smWithFocusNodes) {
+      return;
+    }
+
+    const currentCanvasTabIndex = this.canvas.tabIndex;
+    if (currentCanvasTabIndex === -1 || isNaN(currentCanvasTabIndex)) {
+      this.canvas.tabIndex = (this._tabIndex !== null ? this._tabIndex : 0);
+    }
+
+    this._keyboardInteractions = new KeyboardInteractions({
+      canvas: this.canvas as HTMLCanvasElement,
+      stateMachine: smWithFocusNodes.instance,
+      hasFocusNodes: true,
+      getOverlayElement: () =>
+        this._accessibilityOverlay?.getSemanticOverlayContainer() ?? null,
+    });
+  }
+
+  /** Runs inside touchend/mouseup so focusing the proxy raises the mobile keyboard. */
+  private summonKeyboardForGesture(): void {
+    if (!this._keyboardInteractions) return;
+    const activeSm = this.focusStateMachine;
+    if (!activeSm) return;
+    if (this.wantsTextInputSession(activeSm.focusState().expectsKeyboardInput)) {
+      this._keyboardInteractions.summonForPointer();
+    }
+  }
+
+  /** expectsKeyboardInput, and (with semantics on) the focused node is a textField. */
+  private wantsTextInputSession(expectsKeyboardInput: boolean): boolean {
+    if (!expectsKeyboardInput) return false;
+    const node = this._semanticTree?.focusedNode();
+    return node === undefined || node.role === SemanticRole.textField;
+  }
+
+  private advanceAndDrainForPointer(
+    elapsedTime: number,
+    options?: { pointerDown?: boolean },
+  ): void {
+    if (!options?.pointerDown) {
+      this.advanceAndReportChanges(elapsedTime);
+      return;
+    }
+    this._inPointerDownDrain = true;
+    try {
+      this.advanceAndReportChanges(elapsedTime);
+    } finally {
+      this._inPointerDownDrain = false;
+    }
+  }
+
+  private cleanupKeyboardInteractions(): void {
+    if (this._keyboardInteractions) {
+      this._keyboardInteractions.cleanup();
+      this._keyboardInteractions = null;
+    }
+    this._prevWantsTextInputSession = false;
+    this._accessibilityOverlay?.releaseEditingHost(null, null);
+  }
+
+  /**
+   * Remove Rive Listeners setup on the canvas
+   */
+  public removeRiveListeners(): void {
+    if (this.eventCleanup) {
+      this.eventCleanup();
+      this.eventCleanup = null;
+    }
+    this.cleanupKeyboardInteractions();
+  }
+
+  /**
+   * If the instance has audio and the system audio is not ready
+   * we hook the instance to the audio manager
+   */
+  private initializeAudio() {
+    // Initialize audio if needed
+    if (audioManager.status == SystemAudioStatus.UNAVAILABLE) {
+      if (
+        this.file.hasAudio ||
+        (this.artboard?.hasAudio && this._audioEventListener === null)
+      ) {
+        this._audioEventListener = {
+          type: EventType.AudioStatusChange,
+          callback: () => this.onSystemAudioChanged(),
+        };
+        audioManager.add(this._audioEventListener);
+        audioManager.establishAudio();
+      }
+    }
+  }
+
+  private initArtboardSize() {
+    if (!this.artboard) return;
+
+    // Use preset values if they are not undefined
+    this._artboardWidth = this.artboard.width =
+      this._artboardWidth || this.artboard.width;
+    this._artboardHeight = this.artboard.height =
+      this._artboardHeight || this.artboard.height;
+  }
+
+  // Initializes runtime with Rive data and preps for playing.
+  // Returns true for successful initialization.
+  private async initData(
+    artboardName: string,
+    animationNames: string[],
+    stateMachineNames: string[],
+    autoplay: boolean,
+    autoBind: boolean,
+  ): Promise<boolean> {
+    try {
+      // A caller-supplied riveFile is theirs to release; one we import here is
+      // ours, which matters if a deferred fallback replaces it below.
+      this.ownsRiveFile = this.riveFile == null;
+      if (this.ownsRiveFile) {
+        const riveFile = new RiveFile({
+          src: this.src,
+          buffer: this.buffer,
+          enableRiveAssetCDN: this.enableRiveAssetCDN,
+          assetLoader: this.assetLoader,
+          enablePerfMarks: this.enablePerfMarks,
+          // The instance owns this file, so its flag is the file's flag.
+          enableGPUCanvas: this.deferredRenderer,
+        });
+        this.riveFile = riveFile;
+        await riveFile.init();
+        if (this.destroyed) {
+          // In the very unlikely scenario where the rive file created by this Rive is shared by
+          // another rive file, we only want to destroy it if this file is the only owner.
+          riveFile.destroyIfUnused();
+          return false;
+        }
+      }
+      // May replace this.riveFile with a re-import, so it runs before the
+      // instance takes its reference. Skipped unless something deferred is in
+      // play, so the default path stays synchronous through to the load event.
+      if (this.riveFile.deferredSession !== null || this.deferredRenderer) {
+        await this.resolveDeferredRendering();
+        if (this.destroyed) {
+          // cleanup() ran during a re-import. Taking a reference now would
+          // resurrect a file this instance is never going to draw. Only ours
+          // to release — a caller-supplied file stays theirs.
+          if (this.ownsRiveFile) {
+            this.riveFile?.destroyIfUnused();
+          }
+          return false;
+        }
+      }
+      this.file = this.riveFile.getInstance();
+      this.reportDisplayScale();
+      // Initialize and draw frame
+      this.initArtboard(
+        artboardName,
+        animationNames,
+        stateMachineNames,
+        autoplay,
+        autoBind,
+      );
+
+      // Initialize the artboard size
+      this.initArtboardSize();
+
+      // Check for audio
+      this.initializeAudio();
+
+      if (this.semanticsMode === SemanticMode.Enabled) {
+        this.activateSemantics();
+      } else if (this._semanticsActive) {
+        this.syncSemanticsOnStateMachines();
+      }
+
+      // Everything's set up, emit a load event
+      try {
+        this.loaded = true;
+        this.eventManager.fire({
+          type: EventType.Load,
+          data: this.src ?? "buffer",
+        });
+      } catch (e) {
+        // If any synchronous errors surface from the user-supplied onLoad callback,
+        // this will console.error the error but will not invoke LoadError (onLoadError).
+        // Notably, this will not interfere with Rive rendering
+        console.error(e);
+      }
+
+      // Only initialize paused state machines after the load event has been fired
+      // to allow users to initialize inputs and view models before the first advance
+      this.animator.advanceIfPaused();
+
+      // Flag ready for playback commands and clear the task queue; this order
+      // is important or it may infinitely recurse
+      this.readyForPlaying = true;
+      this.taskQueue.process();
+
+      this.drawFrame();
+
+      return true;
+    } catch (error) {
+      // Invoke LoadError for errors with loading the configured Artboard + State Machine
+      const msg = resolveErrorMessage(error);
+      this.eventManager.fire({ type: EventType.LoadError, data: msg });
+      return Promise.reject(msg);
+    }
+  }
+
+  /**
+   * Settles which rendering mode this Rive instance runs in. The file dictates: its rendering mode
+   * is fixed at import, and an immediate renderer silently drops a deferred
+   * file's resources. Every mismatch warns and degrades to something that
+   * renders, so users shouldn't have a blank canvas. A fallback self-reimport replaces `this.riveFile`;
+   * only a file this instance imported is released when that happens.
+   */
+  private async resolveDeferredRendering(): Promise<void> {
+    const file = this.riveFile;
+    const ownsFile = this.ownsRiveFile;
+    const renderer = this.renderer;
+    const session = file.deferredSession;
+    if (session === null) {
+      // No second warning when the file asked for deferred and the build
+      // could not honor it; the unsupported-build warning already fired, and
+      // telling the user to set a flag they set would mislead.
+      if (this.deferredRenderer && !file.deferredRequested) {
+        console.warn(
+          "Rive: `enableGPUCanvas: true` was ignored because this RiveFile was imported without it. The mode is fixed at import: construct the RiveFile with `enableGPUCanvas: true` to opt in.",
+        );
+      }
+      return;
+    }
+    if (!this.deferredRenderer) {
+      console.warn(
+        "Rive: this RiveFile was imported with `enableGPUCanvas: true`, so this instance renders deferred even though `enableGPUCanvas` is false on the instance. An immediate renderer would drop the file's deferred resources and draw nothing.",
+      );
+    }
+    const attachSession = renderer?.attachSession;
+    if (typeof attachSession !== "function") {
+      // Offscreen renderers share one context across canvases, which a session
+      // cannot record for. An immediate copy of the file still renders.
+      console.warn(
+        "Rive: this renderer cannot replay a deferred session (`useOffscreenRenderer` is not supported with deferred rendering). Re-importing the file in immediate mode for this instance.",
+      );
+      const immediate = await file.reimport(false);
+      if (this.destroyed) {
+        // cleanup() ran while we were importing; nothing will use this copy.
+        immediate.destroyIfUnused();
+        return;
+      }
+      this.riveFile = immediate;
+      this.ownsRiveFile = true;
+      if (ownsFile) {
+        // Nothing else can reach the deferred import we just walked away from.
+        file.destroyIfUnused();
+      }
+      return;
+    }
+    // Never re-offered once claimed, even if that renderer is gone: the
+    // resources the session's stream refers to died with it.
+    if (!file.sessionClaimed && attachSession.call(renderer, session)) {
+      file.claimSession();
+      return;
+    }
+    // Bound to another instance. Re-import from the retained buffer into a
+    // session of our own.
+    file.warnBoundElsewhereOnce();
+    const copy = await file.reimport(true);
+    if (this.destroyed) {
+      // The renderer was deleted while we imported; attaching to it would hand
+      // embind a deleted object.
+      copy.destroyIfUnused();
+      return;
+    }
+    this.riveFile = copy;
+    this.ownsRiveFile = true;
+    const copySession = copy.deferredSession;
+    if (copySession !== null && attachSession.call(renderer, copySession)) {
+      copy.claimSession();
+      return;
+    }
+    // The copy's session could not take this canvas either (this renderer
+    // already holds one). An immediate re-import still renders; a deferred file
+    // on an immediate renderer would drop its resources and draw nothing.
+    console.warn(
+      "Rive: could not attach the re-imported file's deferred session to this canvas; falling back to immediate rendering for this instance.",
+    );
+    // If a leftover session is why the attach failed, it would keep routing
+    // the immediate file's draws into its recorder, which drops them.
+    renderer.detachSession?.();
+    const fallback = await file.reimport(false);
+    // The deferred copy was only ever ours, so it always goes.
+    copy.destroyIfUnused();
+    if (this.destroyed) {
+      fallback.destroyIfUnused();
+      return;
+    }
+    this.riveFile = fallback;
+    this.ownsRiveFile = true;
+    if (ownsFile) {
+      file.destroyIfUnused();
+    }
+  }
+
+  // Initialize for playback
+  private initArtboard(
+    artboardName: string,
+    animationNames: string[],
+    stateMachineNames: string[],
+    autoplay: boolean,
+    autoBind: boolean,
+  ): void {
+    if (!this.file) {
+      return;
+    }
+    // Fetch the artboard
+    const rootArtboard = artboardName
+      ? this.file.artboardByName(artboardName)
+      : this.file.defaultArtboard();
+
+    // Check we have a working artboard
+    if (!rootArtboard) {
+      throw new RiveError("Invalid artboard name or no default artboard");
+    }
+
+    this.artboard = rootArtboard;
+    rootArtboard.volume = this._volume * audioManager.systemVolume;
+
+    // Initialize the animator
+    this.animator = new Animator(
+      this.runtime,
+      this.artboard,
+      this.eventManager,
+    );
+
+    // Initialize the animations; as loaded hasn't happened yet, we need to
+    // suppress firing the play/pause events until the load event has fired. To
+    // do this we tell the animator to suppress firing events, and add event
+    // firing to the task queue.
+    let instanceNames: string[];
+    if (animationNames.length > 0 || stateMachineNames.length > 0) {
+      instanceNames = animationNames.concat(stateMachineNames);
+      this.animator.initLinearAnimations(animationNames, autoplay);
+      this.animator.initStateMachines(stateMachineNames, autoplay, this._semanticsActive);
+    } else {
+      instanceNames = [this.animator.atLeastOne(autoplay, false, this._semanticsActive)];
+    }
+    // Queue up firing the playback events
+    this.taskQueue.add({
+      event: {
+        type: autoplay ? EventType.Play : EventType.Pause,
+        data: instanceNames,
+      },
+    });
+
+    if (autoBind) {
+      // Set the main view model instance (if the artboard has one)...
+      const viewModel = this.file.defaultArtboardViewModel(rootArtboard);
+      if (viewModel !== null) {
+        const runtimeInstance = viewModel.defaultInstance();
+        if (runtimeInstance !== null) {
+          const viewModelInstance = new ViewModelInstance(
+            runtimeInstance,
+            null,
+          );
+          createFinalization(
+            viewModelInstance,
+            viewModelInstance.runtimeInstance,
+          );
+          this.setViewModelInstance(viewModelInstance);
+        }
+      }
+      // ...and a default instance for each global view model (no longer
+      // auto-created by the runtime), then apply everything in one rebind.
+      for (const name of this.file.globalViewModelNames()) {
+        const globalViewModel = this.file.viewModelByName(name);
+        if (globalViewModel !== null) {
+          const instance = new ViewModel(globalViewModel).defaultInstance();
+          if (instance !== null) {
+            this.setGlobalViewModelInstance(name, instance);
+          }
+        }
+      }
+      this.bind();
+    }
+  }
+
+  // Draws the current artboard frame
+  public drawFrame() {
+    if (document?.timeline?.currentTime) {
+      if (this.loaded && this.artboard && !this.frameRequestId) {
+        this._boundDraw(document!.timeline!.currentTime as number);
+        this.runtime?.resolveAnimationFrame();
+      }
+    } else {
+      this.scheduleRendering();
+    }
+  }
+
+  private _canvasSizeChanged(): boolean {
+    let changed = false;
+    if (this.canvas) {
+      if (this.canvas.width !== this._currentCanvasWidth) {
+        this._currentCanvasWidth = this.canvas.width;
+        changed = true;
+      }
+      if (this.canvas.height !== this._currentCanvasHeight) {
+        this._currentCanvasHeight = this.canvas.height;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // Content the artboard's change flag cannot see: ore and GPU canvas commands
+  // scripts record straight into the session. Must be read before the renderer
+  // clears — clearing marks the stream, so a later read is true every frame.
+  private _deferredWorkPending(): boolean {
+    return this.riveFile?.deferredSession?.recordedThisFrame() ?? false;
+  }
+
+  /** Rive can move focus on its own, so reconcile the text session and DOM focus each frame. */
+  private pollFocusState() {
+    this.ensureKeyboardInteractions();
+    const ki = this._keyboardInteractions;
+    const activeSm = ki ? this.focusStateMachine : undefined;
+    if (!ki || !activeSm || !(this.canvas instanceof HTMLCanvasElement)) {
+      this._prevHasFocus = false;
+      this._prevWantsTextInputSession = false;
+      return;
+    }
+
+    const { hasFocus, expectsKeyboardInput } = activeSm.focusState();
+    this.syncTextInputSession(ki, this.wantsTextInputSession(expectsKeyboardInput));
+    this.syncRiveFocus(ki, this.canvas, hasFocus);
+  }
+
+  /** Begin/end the text session on wantsSession edges; decorate the proxy while it has DOM focus. */
+  private syncTextInputSession(ki: KeyboardInteractions, wantsSession: boolean) {
+    const host = ki.editingHost;
+    const overlay = this._accessibilityOverlay;
+    if (wantsSession) {
+      const began = !this._prevWantsTextInputSession;
+      if (began) {
+        // In-domain or opted-in only; during pointer-down, pointer-up focuses instead.
+        const focusProxy =
+          !this._inPointerDownDrain &&
+          (ki.isInFocusDomain(document.activeElement) ||
+            !!this._focusOptions.allowFocusInterrupt);
+        ki.beginTextInputSession(focusProxy);
+      }
+      // The <input> proxy stands in for the semantic DOM field only while it holds DOM focus.
+      if (overlay && this._semanticTree) {
+        if (host.hasDomFocus()) {
+          overlay.syncEditingHost(this._semanticTree, host, began || !overlay.hasEditingHost());
+        } else if (overlay.hasEditingHost()) {
+          overlay.releaseEditingHost(this._semanticTree, host);
+        }
+      }
+    } else if (this._prevWantsTextInputSession) {
+      // Overlay hand-off first, ahead of endTextInputSession's park-on-canvas fallback.
+      overlay?.releaseEditingHost(this._semanticTree, host);
+      ki.endTextInputSession();
+    }
+    this._prevWantsTextInputSession = wantsSession;
+  }
+
+  /** Mirror Rive's hasFocus into the keyboard session state and, on opt-in, canvas focus. */
+  private syncRiveFocus(
+    ki: KeyboardInteractions,
+    canvas: HTMLCanvasElement,
+    hasFocus: boolean,
+  ) {
+    if (hasFocus) {
+      ki.notifyRiveFocused();
+      // Pull focus from outside Rive only with allowFocusInterrupt.
+      if (!this._prevHasFocus) {
+        if (
+          !ki.isInFocusDomain(document.activeElement) &&
+          this._focusOptions.allowFocusInterrupt
+        ) {
+          canvas.focus();
+        }
+        this._prevHasFocus = true;
+      }
+    } else {
+      this._prevHasFocus = false;
+      // Rive released focus internally (e.g. a state change): drop the Tab trap so the next
+      // Tab leaves the canvas.
+      if (ki.focusSessionState === FocusSessionState.RiveFocused) {
+        ki.setFocusSessionState(FocusSessionState.NotFocused);
+      }
+    }
+  }
+
+  // Tracks the last timestamp at which the animation was rendered. Used only in
+  // draw().
+  private lastRenderTime: number;
+
+  // Tracks the current animation frame request
+  private frameRequestId: number | null = null;
+
+  /**
+   * Used be draw to track when a second of active rendering time has passed.
+   * Used for debugging purposes
+   */
+  private renderSecondTimer = 0;
+
+  /**
+   * Handles important sequence of reporting Rive events, advancing the state machine or animation, and invoking various callbacks
+   * due to state changes, view model property changes, etc.
+   * 
+   * @param elapsedTime time to advance the state machine by
+   */
+  private advanceAndReportChanges(elapsedTime: number): void {
+    // - Advance non-paused animations by the elapsed number of seconds
+    // - Advance any animations that require scrubbing
+    // - Advance to the first frame even when autoplay is false
+    const activeAnimations = this.animator.animations
+      .filter((a) => a.playing || a.needsScrub)
+      // The scrubbed animations must be applied first to prevent weird artifacts
+      // if the playing animations conflict with the scrubbed animating attribuates.
+      .sort((first) => (first.needsScrub ? -1 : 1));
+    for (const animation of activeAnimations) {
+      animation.advance(elapsedTime);
+      if (animation.instance.didLoop) {
+        animation.loopCount += 1;
+      }
+      animation.apply(1.0);
+    }
+
+    // - Advance non-paused state machines by the elapsed number of seconds
+    // - Advance to the first frame even when autoplay is false
+    const activeStateMachines = this.animator.stateMachines.filter(
+      (a) => a.playing,
+    );
+    // Instrument the first 3 frames so the Performance timeline shows precise
+    // per-call latency for advance, draw, and flush without polluting the trace.
+    const _perfFrame =
+      this.enablePerfMarks && this.frameCount < 3 ? this.frameCount : -1;
+    for (const stateMachine of activeStateMachines) {
+      // Check for events before the current frame's state machine advance
+      const numEventsReported = stateMachine.reportedEventCount();
+      if (numEventsReported) {
+        for (let i = 0; i < numEventsReported; i++) {
+          const event = stateMachine.reportedEventAt(i);
+
+          if (event) {
+            if (event.type === RiveEventType.OpenUrl) {
+              this.eventManager.fire({
+                type: EventType.RiveEvent,
+                data: event as rc.OpenUrlEvent,
+              });
+              // Handle the event side effect if explicitly enabled
+              if (this.automaticallyHandleEvents) {
+                const newAnchorTag = document.createElement("a");
+                const { url, target } = event as rc.OpenUrlEvent;
+
+                const sanitizedUrl = sanitizeUrl(url);
+                url && newAnchorTag.setAttribute("href", sanitizedUrl);
+                target && newAnchorTag.setAttribute("target", target);
+                if (sanitizedUrl && sanitizedUrl !== BLANK_URL) {
+                  newAnchorTag.click();
+                }
+              }
+            } else {
+              this.eventManager.fire({
+                type: EventType.RiveEvent,
+                data: event as rc.RiveEvent,
+              });
+            }
+          }
+        }
+      }
+      if (_perfFrame >= 0) performance.mark(`rive:sm-advance:start:f${_perfFrame}`);
+      stateMachine.advanceAndApply(elapsedTime);
+      if (_perfFrame >= 0) {
+        performance.mark(`rive:sm-advance:end:f${_perfFrame}`);
+        performance.measure(`rive:sm-advance:f${_perfFrame}`, `rive:sm-advance:start:f${_perfFrame}`, `rive:sm-advance:end:f${_perfFrame}`);
+      }
+
+      if (this._semanticsActive) {
+        const diff = stateMachine.drainSemanticsDiff();
+        if (diff) {
+          if (!this._semanticTree) {
+            this._semanticTree = new SemanticTreeModel();
+          }
+          this._semanticTree.applyDiff(diff);
+        }
+      }
+    }
+
+    // Update the accessibility overlay after all state machines have
+    // been advanced and their diffs applied to the tree model.
+    if (
+      this._semanticsActive &&
+      this._semanticTree &&
+      activeStateMachines.length > 0 &&
+      this.canvas instanceof HTMLCanvasElement
+    ) {
+      if (!this._accessibilityOverlay) {
+        const mainSm = activeStateMachines[0];
+        this._accessibilityOverlay = new AccessibilityOverlay({
+          canvas: this.canvas,
+          instanceId: this._instanceId,
+          semanticsOptions: this.semanticsOptions,
+          allowFocusInterrupt: this._focusOptions.allowFocusInterrupt,
+          isEditingHostFocused: this.isEditingHostFocused,
+          fireAction: (nodeId, actionType) => {
+            mainSm.fireSemanticAction(nodeId, actionType);
+          },
+          requestFocus: (nodeId) =>
+            mainSm.focusSemanticNode(nodeId),
+          clearFocus: () =>
+            mainSm.instance.clearFocus(),
+        });
+      }
+      const overlayChange = this._accessibilityOverlay?.needsUpdate(this._semanticTree);
+      if (overlayChange || this._overlayTransformDirty) {
+        // Only recompute the artboard→canvas transform when something that
+        // affects it changed (canvas geometry or a layout/dpr input). When only
+        // the semantic tree changed we pass null and reuse the existing CSS
+        // transform on the overlay container.
+        let forwardMat: rc.Mat2D | null = null;
+        if (overlayChange?.layoutChanged || this._overlayTransformDirty) {
+          const fit = this._layout.runtimeFit(this.runtime);
+          const alignment = this._layout.runtimeAlignment(this.runtime);
+          forwardMat = this.runtime.computeAlignment(
+            fit,
+            alignment,
+            {
+              minX: this._layout.minX,
+              minY: this._layout.minY,
+              maxX: this._layout.maxX,
+              maxY: this._layout.maxY,
+            },
+            this.artboard.bounds,
+            this._devicePixelRatioUsed * this._layout.layoutScaleFactor,
+          );
+          this._overlayTransformDirty = false;
+        }
+        this._accessibilityOverlay!.update(
+          this._semanticTree,
+          forwardMat,
+          this._devicePixelRatioUsed,
+          this.artboard.bounds,
+          overlayChange,
+        );
+        forwardMat?.delete();
+      }
+    }
+
+    // For linear animations that have been applied to the artboard, advance it
+    // by the elapsed time.
+    if (this.animator.stateMachines.length == 0) {
+      this.artboard.advance(elapsedTime);
+    }
+
+    // Check for any animations that looped
+    this.animator.handleLooping();
+
+    // Check for any state machines that had a state change
+    this.animator.handleStateChanges();
+
+    // Report advanced time
+    this.animator.handleAdvancing(elapsedTime);
+
+    // Poll focus state to see whether or not to blur or pull up a virtual keyboard for any change to a text input node.
+    this.pollFocusState();
+
+    // Handle callbacks for main view model property changes
+    this._viewModelInstance?.handleCallbacks();
+
+    // Handle callbacks for global view model property changes
+    this._globalViewModelInstances.forEach((instance) => {
+      if (instance) {
+        instance.handleCallbacks();
+      }
+    });
+  }
+
+  /**
+   * Draw rendering loop; renders animation frames at the correct time interval.
+   * @param time the time at which to render a frame
+   */
+  private draw(time: number, onSecond?: VoidCallback): void {
+    // Clear the frameRequestId, as we're now rendering a fresh frame
+    this.frameRequestId = null;
+    // load() tears the artboard down and re-inits asynchronously; a frame
+    // queued before that lands here with nothing to draw.
+    if (!this.artboard) {
+      return;
+    }
+    const before = performance.now();
+
+    // Instrument the first 3 frames so the Performance timeline shows precise
+    // per-call latency for advance, draw, and flush without polluting the trace.
+    const _perfFrame =
+      this.enablePerfMarks && this.frameCount < 3 ? this.frameCount : -1;
+
+    // On the first pass, make sure lastTime has a valid value
+    if (!this.lastRenderTime) {
+      this.lastRenderTime = time;
+    }
+
+    // Handle the onSecond callback
+    this.renderSecondTimer += time - this.lastRenderTime;
+    if (this.renderSecondTimer > 5000) {
+      this.renderSecondTimer = 0;
+      onSecond?.();
+    }
+
+    // Calculate the elapsed time between frames in seconds
+    const elapsedTime = (time - this.lastRenderTime) / 1000;
+    this.lastRenderTime = time;
+
+    this.advanceAndReportChanges(elapsedTime);
+
+    const { renderer } = this;
+    // Do not draw on 0 canvas size. _hasZeroSize follows an asynchronous size
+    // observer, so a synchronous resize to 0 must also be caught here.
+    if (!this._hasZeroSize && this.canvas.width > 0 && this.canvas.height > 0) {
+      // If there was no dirt on this frame, do not clear and draw. The deferred
+      // term has to be read here, before `clear()` below: clearing opens the
+      // session's recording window and marks its stream, so a read taken after
+      // it reports every frame as dirty and nothing is ever skipped.
+      if (
+        this.drawOptimization == DrawOptimizationOptions.AlwaysDraw ||
+        this.artboard.didChange() ||
+        this._deferredWorkPending() ||
+        this._needsRedraw ||
+        this._canvasSizeChanged()
+      ) {
+        // Canvas must be wiped to prevent artifacts
+        renderer.clear();
+        renderer.save();
+
+        // Update the renderer alignment if necessary
+        if (_perfFrame >= 0) performance.mark(`rive:align-renderer:start:f${_perfFrame}`);
+        this.alignRenderer();
+        if (_perfFrame >= 0) {
+          performance.mark(`rive:align-renderer:end:f${_perfFrame}`);
+          performance.measure(`rive:align-renderer:f${_perfFrame}`, `rive:align-renderer:start:f${_perfFrame}`, `rive:align-renderer:end:f${_perfFrame}`);
+        }
+
+        if (_perfFrame >= 0) performance.mark(`rive:artboard-draw:start:f${_perfFrame}`);
+        this.artboard.draw(renderer);
+        if (_perfFrame >= 0) {
+          performance.mark(`rive:artboard-draw:end:f${_perfFrame}`);
+          performance.measure(`rive:artboard-draw:f${_perfFrame}`, `rive:artboard-draw:start:f${_perfFrame}`, `rive:artboard-draw:end:f${_perfFrame}`);
+        }
+
+        renderer.restore();
+
+        if (_perfFrame >= 0) performance.mark(`rive:renderer-flush:start:f${_perfFrame}`);
+        renderer.flush();
+        if (_perfFrame >= 0) {
+          performance.mark(`rive:renderer-flush:end:f${_perfFrame}`);
+          performance.measure(`rive:renderer-flush:f${_perfFrame}`, `rive:renderer-flush:start:f${_perfFrame}`, `rive:renderer-flush:end:f${_perfFrame}`);
+        }
+
+        this._needsRedraw = false;
+      }
+    }
+
+    // Add duration to create frame to durations array
+    this.frameCount++;
+    const after = performance.now();
+    this.frameTimes.push(after);
+    this.durations.push(after - before);
+    while (this.frameTimes[0] <= after - 1000) {
+      this.frameTimes.shift();
+      this.durations.shift();
+    }
+
+    // Calling requestAnimationFrame will rerun draw() at the correct rate:
+    // https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Basic_animations
+    if (this.animator.isPlaying) {
+      // Request a new rendering frame
+      this.scheduleRendering();
+    } else if (this.animator.isPaused) {
+      // Reset the end time so on playback it starts at the correct frame
+      this.lastRenderTime = 0;
+    } else if (this.animator.isStopped) {
+      // Reset animation instances, artboard and time
+      // TODO: implement this properly when we have instancing
+      // this.initArtboard();
+      // this.drawFrame();
+      this.lastRenderTime = 0;
+    }
+  }
+
+  /**
+   * Align the renderer
+   */
+  private alignRenderer(): void {
+    const { renderer, runtime, _layout, artboard } = this;
+    // Align things up safe in the knowledge we can restore if changed
+    renderer.align(
+      _layout.runtimeFit(runtime),
+      _layout.runtimeAlignment(runtime),
+      {
+        minX: _layout.minX,
+        minY: _layout.minY,
+        maxX: _layout.maxX,
+        maxY: _layout.maxY,
+      },
+      artboard.bounds,
+      this._devicePixelRatioUsed * _layout.layoutScaleFactor,
+    );
+  }
+
+  public get fps() {
+    return this.durations.length;
+  }
+
+  public get frameTime() {
+    if (this.durations.length === 0) {
+      return 0;
+    }
+    return (
+      this.durations.reduce((a, b) => a + b, 0) / this.durations.length
+    ).toFixed(4);
+  }
+
+  /**
+   * Cleans up all Wasm-generated objects that need to be manually destroyed:
+   * artboard instances, animation instances, state machine instances,
+   * renderer instance, file and runtime.
+   *
+   * Once this is called, you will need to initialise a new instance of the
+   * Rive class
+   */
+  public cleanup() {
+    this.destroyed = true;
+    // Stop the renderer if it hasn't already been stopped.
+    this.stopRendering();
+    // Make the GL context backing this renderer current before any WASM teardown
+    // that frees GPU resources. Binding here covers the artboard/file deletes;
+    // deleteRiveRenderer() re-binds for the renderer's own delete. No-op on the
+    // canvas2d build
+    this.renderer?.bindContext?.();
+    // Clean up any artboard, animation or state machine instances.
+    this.cleanupInstances();
+    // Remove from observer
+    if (this._observed !== null) {
+      observers.remove(this._observed);
+    }
+    this.removeRiveListeners();
+    // The file and its session go before the renderer: the session's replay
+    // state lives in the renderer's context. But the renderer must let go of
+    // the session first — its detach handle dies with session.delete(), and a
+    // later detach would pass embind a deleted object.
+    if (this.renderer) {
+      this.renderer.detachSession?.();
+    }
+    this.releaseCurrentRiveFile(/* isTeardown */ true);
+    this.riveFile = null;
+    this.deleteRiveRenderer();
+    if (this._audioEventListener !== null) {
+      audioManager.remove(this._audioEventListener);
+      this._audioEventListener = null;
+    }
+    if (this._pageVisibilityHandler) {
+      document.removeEventListener('visibilitychange', this._pageVisibilityHandler);
+      this._pageVisibilityHandler = null;
+    }
+    this._viewModelInstance?.cleanup();
+    this._viewModelInstance = null;
+    this._globalViewModelInstances.forEach((instance) => instance.cleanup());
+    this._globalViewModelInstances.clear();
+    this._dataEnums = null;
+  }
+
+  /**
+   * Drops this instance's hold on `this.riveFile`. A reference taken through
+   * getInstance() is given back; a file we imported but never referenced is
+   * released outright so its session goes with it. A caller-supplied file we
+   * never referenced is left alone.
+   *
+   * `isTeardown` distinguishes cleanup() from a reload. Teardown always hands
+   * the reference back, as it always has. A reload must not do that for a
+   * caller-supplied file: a RiveFile carries no reference for its creator, so
+   * releasing here would take the last one and destroy a file the caller still
+   * holds.
+   */
+  private releaseCurrentRiveFile(isTeardown: boolean): void {
+    if (this.file) {
+      if (isTeardown || this.ownsRiveFile) {
+        this.riveFile?.cleanup();
+      }
+      this.file = null;
+    } else if (this.ownsRiveFile) {
+      this.riveFile?.destroyIfUnused();
+    }
+  }
+
+  /**
+   * Cleans up the Renderer object. Only call this API if you no longer
+   * need to render Rive content in your session.
+   */
+  public deleteRiveRenderer() {
+    if (this.renderer) {
+      // A session outliving this renderer has to stop pointing at it, and its
+      // replay state has to drop while this context is still alive. No-op when
+      // nothing was ever attached.
+      this.renderer.detachSession?.();
+      this.renderer.delete();
+    }
+    this.renderer = null;
+  }
+
+  /**
+   * @experimental This API is early and may encounter breaking behavior change without a major version bump
+   *
+   * Whether this instance is rendering through a deferred session. False whenever
+   * a fallback ran, whatever was requested.
+   */
+  public get deferredRendererActive(): boolean {
+    return this.renderer?.deferredActive?.() ?? false;
+  }
+
+  /**
+   * Cleans up any Wasm-generated objects that need to be manually destroyed:
+   * artboard instances, animation instances, state machine instances.
+   *
+   * Once this is called, things will need to be reinitialized or bad things
+   * might happen.
+   */
+  public cleanupInstances() {
+    if (this.eventCleanup !== null) {
+      this.eventCleanup();
+    }
+    this.cleanupKeyboardInteractions();
+    // Tear down semantics before deleting state machines — the overlay's action
+    // closures point at instances that stop() is about to free.
+    this.cleanupSemantics();
+    // Delete all animation and state machine instances synchronously via the
+    // animator
+    this.animator?.stop();
+    if (this.artboard) {
+      this.artboard.delete();
+      this.artboard = null;
+    }
+  }
+
+  /**
+   * Tries to query the setup Artboard for a text run node with the given name.
+   *
+   * @param textRunName - Name of the text run node associated with a text object
+   * @returns - TextValueRun node or undefined if the text run cannot be queried
+   */
+  private retrieveTextRun(textRunName: string): rc.TextValueRun | undefined {
+    if (!textRunName) {
+      console.warn("No text run name provided");
+      return;
+    }
+    if (!this.artboard) {
+      console.warn("Tried to access text run, but the Artboard is null");
+      return;
+    }
+    const textRun: rc.TextValueRun = this.artboard.textRun(textRunName);
+    if (!textRun) {
+      console.warn(
+        `Could not access a text run with name '${textRunName}' in the '${this.artboard?.name}' Artboard. Note that you must rename a text run node in the editor to make it queryable at runtime.`,
+      );
+      return;
+    }
+    return textRun;
+  }
+
+  /**
+   * Returns a string from a given text run node name, or undefined if the text run
+   * cannot be queried.
+   *
+   * @deprecated Text run APIs are deprecated: use data binding instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   * @param textRunName - Name of the text run node associated with a text object
+   * @returns - String value of the text run node or undefined
+   */
+  public getTextRunValue(textRunName: string): string | undefined {
+    warnOnce(DeprecationKeys.textRuns, textRunsDeprecationWarning);
+    const textRun = this.retrieveTextRun(textRunName);
+    return textRun ? textRun.text : undefined;
+  }
+
+  /**
+   * Sets a text value for a given text run node name if possible
+   *
+   * @deprecated Text run APIs are deprecated: use data binding instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   * @param textRunName - Name of the text run node associated with a text object
+   * @param textRunValue - String value to set on the text run node
+   */
+  public setTextRunValue(textRunName: string, textRunValue: string): void {
+    warnOnce(DeprecationKeys.textRuns, textRunsDeprecationWarning);
+    const textRun = this.retrieveTextRun(textRunName);
+    if (textRun) {
+      textRun.text = textRunValue;
+    }
+  }
+
+  /**
+   * Warns when playback-control names match linear animations in the
+   * Animator's instanced context; state machine playback remain supported.
+   *
+   * Remove for v3 release
+   */
+  private warnIfLinearAnimationNames(names: string[], methodName: string): void {
+    if (
+      this.animator &&
+      this.animator.animations.some((a) => names.includes(a.name))
+    ) {
+      warnDeprecatedAnimationNames(methodName);
+    }
+  }
+
+  /**
+   * Plays specified animations or state machines; if none specified, it
+   * unpauses everything.
+   * @param animationNames Animation or state machine name(s) to play.
+   * 
+   * Deprecated usage: passing linear animation names (control playback with a
+   * state machine instead) and passing an array of names (this parameter
+   * becomes a single string in the next major version).
+   */
+  public play(animationNames?: string | string[], autoplay?: true): void {
+    warnIfNamesArray(animationNames, "play");
+    const names = mapToStringArray(animationNames);
+
+    // If the file's not loaded, queue up the play
+    if (!this.readyForPlaying) {
+      this.taskQueue.add({
+        action: () => this.play(animationNames, autoplay),
+      });
+      return;
+    }
+    this.animator.play(names);
+    this.warnIfLinearAnimationNames(names, "play");
+    this.syncSemanticsOnStateMachines();
+    if (this.eventCleanup) {
+      this.eventCleanup();
+    }
+    this.cleanupKeyboardInteractions();
+    this.setupRiveListeners();
+    this.startRendering();
+  }
+
+  /**
+   * Pauses specified animations or state machines; if none specified, pauses
+   * all.
+   * @param animationNames Animation or state machine name(s) to pause.
+   * 
+   * Deprecated usage: passing linear animation names (control playback with a
+   * state machine instead) and passing an array of names (this parameter
+   * becomes a single string in the next major version).
+   */
+  public pause(animationNames?: string | string[]): void {
+    warnIfNamesArray(animationNames, "pause");
+    const names = mapToStringArray(animationNames);
+
+    // If the file's not loaded, early out, nothing to pause
+    if (!this.readyForPlaying) {
+      this.taskQueue.add({
+        action: () => this.pause(animationNames),
+      });
+      return;
+    }
+    if (this.eventCleanup) {
+      this.eventCleanup();
+    }
+    this.cleanupKeyboardInteractions();
+    this.animator.pause(names);
+    this.warnIfLinearAnimationNames(names, "pause");
+  }
+
+  /**
+   * Scrubs specified animations to the given time; if none specified, scrubs
+   * all of them.
+   * @deprecated `scrub()` will be removed in a future major version: use a
+   * state machine to control playback instead
+   */
+  public scrub(animationNames?: string | string[], value?: number): void {
+    warnOnce(
+      DeprecationKeys.scrub,
+      "`scrub()` is deprecated and will be removed in a future major version: " +
+        "use a state machine to control playback instead.",
+    );
+    const names = mapToStringArray(animationNames);
+
+    // If the file's not loaded, early out, nothing to pause
+    if (!this.readyForPlaying) {
+      this.taskQueue.add({
+        action: () => this.scrub(animationNames, value),
+      });
+      return;
+    }
+    // Scrub the animation time; we draw a single frame here so that if
+    // nothing's currently playing, the scrubbed animation is still rendered/
+    this.animator.scrub(names, value || 0);
+    this.drawFrame();
+  }
+
+  /**
+   * Stops specified animations or state machines; if none specified, stops
+   * them all.
+   * @param animationNames Animation or state machine name(s) to stop.
+   * 
+   * Deprecated usage: passing linear animation names (control playback with a
+   * state machine instead) and passing an array of names (this parameter
+   * becomes a single string in the next major version).
+   */
+  public stop(animationNames?: string | string[] | undefined): void {
+    warnIfNamesArray(animationNames, "stop");
+    const names = mapToStringArray(animationNames);
+    // If the file's not loaded, early out, nothing to pause
+    if (!this.readyForPlaying) {
+      this.taskQueue.add({
+        action: () => this.stop(animationNames),
+      });
+      return;
+    }
+    this.warnIfLinearAnimationNames(names, "stop");
+    // If there is no artboard, this.animator will be undefined
+    if (this.animator) {
+      this.animator.stop(names);
+    }
+    if (this.eventCleanup) {
+      this.eventCleanup();
+    }
+    this.cleanupKeyboardInteractions();
+    this.cleanupSemantics();
+  }
+
+  /**
+   * Resets the animation
+   * @param artboard the name of the artboard, or default if none given
+   * @param stateMachine the name of the state machine for playback
+   * @param autoplay whether to autoplay when reset, defaults to false
+   *
+   */
+  public reset(params?: RiveResetParameters): void {
+    // Get the current artboard, animations, state machines, and playback states
+    const artBoardName = params?.artboard;
+    const {
+      startingAnimationNames: animationNames,
+      startingStateMachineNames: stateMachineNames,
+    } = resolveStartingPlayback({
+      stateMachine: params?.stateMachine,
+      animations: params?.animations,
+      stateMachines: params?.stateMachines,
+    });
+    const autoplay = params?.autoplay ?? false;
+    const autoBind = params?.autoBind ?? false;
+
+    // Stop everything and clean up
+    this.cleanupInstances();
+
+    // Reinitialize an artboard instance with the state
+    this.initArtboard(
+      artBoardName,
+      animationNames,
+      stateMachineNames,
+      autoplay,
+      autoBind,
+    );
+    // Only drain the task queue once playback commands can execute; tasks
+    // queued before then re-add themselves in a loop.
+    if (this.readyForPlaying) {
+      this.taskQueue.process();
+    }
+  }
+
+  // Loads a new Rive file, keeping listeners in place
+  public load(params: RiveLoadParameters): void {
+    // Before stop(), so a call with no source leaves playback running.
+    if (!params.src && !params.buffer && !params.riveFile) {
+      throw new RiveError(Rive.missingErrorMessage);
+    }
+    // Stop all animations
+    this.stop();
+    // Reinitialize
+    this.init(params);
+  }
+
+  // Sets a new layout
+  public set layout(layout: Layout) {
+    this._layout = layout;
+    this.reportDisplayScale();
+    // Fit/alignment/bounds feed the overlay transform.
+    this._overlayTransformDirty = true;
+    // If the maxX or maxY are 0, then set them to the canvas width and height
+    if (!layout.maxX || !layout.maxY) {
+      this.resizeToCanvas();
+    }
+    if (this.loaded && !this.animator.isPlaying) {
+      this.drawFrame();
+    }
+  }
+
+  /**
+   * Returns the current layout. Note that layout should be treated as
+   * immutable. If you want to change the layout, create a new one use the
+   * layout setter
+   */
+  public get layout() {
+    return this._layout;
+  }
+
+  /**
+   * Sets the layout bounds to the current canvas size; this is typically called
+   * when the canvas is resized
+   */
+  public resizeToCanvas() {
+    this._layout = this.layout.copyWith({
+      minX: 0,
+      minY: 0,
+      maxX: this.canvas.width,
+      maxY: this.canvas.height,
+    });
+    // Layout bounds feed the overlay transform.
+    this._overlayTransformDirty = true;
+  }
+
+  /**
+   * Accounts for devicePixelRatio as a multiplier to render the size of the canvas drawing surface.
+   * Uses the size of the backing canvas to set new width/height attributes. Need to re-render
+   * and resize the layout to match the new drawing surface afterwards.
+   * Useful function for consumers to include in a window resize listener.
+   *
+   * This method will set the {@link devicePixelRatioUsed} property.
+   *
+   * Optionally, you can provide a {@link customDevicePixelRatio} to provide a
+   * custom value.
+   */
+  public resizeDrawingSurfaceToCanvas(customDevicePixelRatio?: number) {
+    if (this.canvas instanceof HTMLCanvasElement && !!window) {
+      const { width, height } = this.canvas.getBoundingClientRect();
+      const dpr = customDevicePixelRatio || window.devicePixelRatio || 1;
+      this.devicePixelRatioUsed = dpr;
+      this.canvas.width = dpr * width;
+      this.canvas.height = dpr * height;
+      this._needsRedraw = true;
+      this.resizeToCanvas();
+
+      if (this.layout.fit === Fit.Layout && this.artboard) {
+        const scaleFactor = this._layout.layoutScaleFactor;
+        this.artboard.width = width / scaleFactor;
+        this.artboard.height = height / scaleFactor;
+      }
+
+      this.drawFrame();
+    }
+  }
+
+  // Returns the animation source, which may be undefined
+  public get source(): string {
+    return this.src;
+  }
+
+  /**
+   * Returns the name of the active artboard
+   */
+  public get activeArtboard(): string {
+    return this.artboard ? this.artboard.name : "";
+  }
+
+  /**
+   * Returns the semantic tree model when semantics are enabled, or null.
+   * The overlay and external consumers use this to inspect the
+   * current state of the semantic tree.
+   */
+  public get semanticTree(): SemanticTreeModel | null {
+    return this._semanticTree;
+  }
+
+  /**
+   * Returns the accessibility overlay when semantics are enabled, or null.
+   * External consumers can use this to inspect the
+   * current state of the accessibility overlay for this instance.
+   */
+  public get accessibilityOverlay(): AccessibilityOverlay | null {
+    return this._accessibilityOverlay;
+  }
+
+  // Returns a list of animation names on the chosen artboard
+  public get animationNames(): string[] {
+    // If the file's not loaded, we got nothing to return
+    if (!this.loaded || !this.artboard) {
+      return [];
+    }
+    const animationNames: string[] = [];
+    for (let i = 0; i < this.artboard.animationCount(); i++) {
+      animationNames.push(this.artboard.animationByIndex(i).name);
+    }
+    return animationNames;
+  }
+
+  /**
+   * Returns a list of state machine names from the current artboard
+   */
+  public get stateMachineNames(): string[] {
+    // If the file's not loaded, we got nothing to return
+    if (!this.loaded || !this.artboard) {
+      return [];
+    }
+    const stateMachineNames: string[] = [];
+    for (let i = 0; i < this.artboard.stateMachineCount(); i++) {
+      stateMachineNames.push(this.artboard.stateMachineByIndex(i).name);
+    }
+    return stateMachineNames;
+  }
+
+  /**
+   * Returns the inputs for the specified instanced state machine, or an empty
+   * list if the name is invalid or the state machine is not instanced. Returns
+   * undefined if the file is not loaded yet.
+   * 
+   * @deprecated State machine inputs are deprecated: use data binding
+   * properties instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   * @param name the state machine name
+   * @returns the inputs for the named state machine or undefined
+   */
+  public stateMachineInputs(name: string): StateMachineInput[] | undefined {
+    warnOnce(
+      DeprecationKeys.stateMachineInputs,
+      stateMachineInputsDeprecationWarning,
+    );
+    // If the file's not loaded, early out, nothing to pause
+    if (!this.loaded) {
+      return;
+    }
+    const stateMachine = this.animator.stateMachines.find(
+      (m) => m.name === name,
+    );
+    return stateMachine?.inputs;
+  }
+
+  // Returns the input with the provided name at the given path
+  private retrieveInputAtPath(
+    name: string,
+    path: string,
+  ): rc.SMIInput | undefined {
+    if (!name) {
+      console.warn(`No input name provided for path '${path}'`);
+      return;
+    }
+    if (!this.artboard) {
+      console.warn(
+        `Tried to access input: '${name}', at path: '${path}', but the Artboard is null`,
+      );
+      return;
+    }
+    const input: rc.SMIInput = this.artboard.inputByPath(name, path);
+
+    if (!input) {
+      console.warn(
+        `Could not access an input with name: '${name}', at path:'${path}'`,
+      );
+      return;
+    }
+    return input;
+  }
+
+  /**
+   * Set the boolean input with the provided name at the given path with value
+   * @deprecated State machine inputs are deprecated: use data binding
+   * properties instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   * @param input the state machine input name
+   * @param value the value to set the input to
+   * @param path the path the input is located at an artboard level
+   */
+  public setBooleanStateAtPath(
+    inputName: string,
+    value: boolean,
+    path: string,
+  ) {
+    warnOnce(
+      DeprecationKeys.stateMachineInputs,
+      stateMachineInputsDeprecationWarning,
+    );
+    const input: rc.SMIInput = this.retrieveInputAtPath(inputName, path);
+    if (!input) return;
+
+    if (input.type === StateMachineInputType.Boolean) {
+      input.asBool().value = value;
+    } else {
+      console.warn(
+        `Input with name: '${inputName}', at path:'${path}' is not a boolean`,
+      );
+    }
+  }
+
+  /**
+   * Set the number input with the provided name at the given path with value
+   * @deprecated State machine inputs are deprecated: use data binding
+   * properties instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   * @param input the state machine input name
+   * @param value the value to set the input to
+   * @param path the path the input is located at an artboard level
+   */
+  public setNumberStateAtPath(inputName: string, value: number, path: string) {
+    warnOnce(
+      DeprecationKeys.stateMachineInputs,
+      stateMachineInputsDeprecationWarning,
+    );
+    const input: rc.SMIInput = this.retrieveInputAtPath(inputName, path);
+    if (!input) return;
+
+    if (input.type === StateMachineInputType.Number) {
+      input.asNumber().value = value;
+    } else {
+      console.warn(
+        `Input with name: '${inputName}', at path:'${path}' is not a number`,
+      );
+    }
+  }
+
+  /**
+   * Fire the trigger with the provided name at the given path
+   * @deprecated State machine inputs are deprecated: use data binding
+   * properties instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   * @param input the state machine input name
+   * @param path the path the input is located at an artboard level
+   */
+  public fireStateAtPath(inputName: string, path: string) {
+    warnOnce(
+      DeprecationKeys.stateMachineInputs,
+      stateMachineInputsDeprecationWarning,
+    );
+    const input: rc.SMIInput = this.retrieveInputAtPath(inputName, path);
+    if (!input) return;
+
+    if (input.type === StateMachineInputType.Trigger) {
+      input.asTrigger().fire();
+    } else {
+      console.warn(
+        `Input with name: '${inputName}', at path:'${path}' is not a trigger`,
+      );
+    }
+  }
+
+  // Returns the TextValueRun object for the provided name at the given path
+  private retrieveTextAtPath(
+    name: string,
+    path: string,
+  ): rc.TextValueRun | undefined {
+    if (!name) {
+      console.warn(`No text name provided for path '${path}'`);
+      return;
+    }
+    if (!path) {
+      console.warn(`No path provided for text '${name}'`);
+      return;
+    }
+    if (!this.artboard) {
+      console.warn(
+        `Tried to access text: '${name}', at path: '${path}', but the Artboard is null`,
+      );
+      return;
+    }
+    const text: rc.TextValueRun = this.artboard.textByPath(name, path);
+    if (!text) {
+      console.warn(
+        `Could not access text with name: '${name}', at path:'${path}'`,
+      );
+      return;
+    }
+    return text;
+  }
+
+  /**
+   * Retrieves the text value for a specified text run at a given path
+   * @param textName The name of the text run
+   * @param path The path to the text run within the artboard
+   * @returns The text value of the text run, or undefined if not found
+   *
+   * @example
+   * // Get the text value for a text run named "title" at one nested artboard deep
+   * const titleText = riveInstance.getTextRunValueAtPath("title", "artboard1");
+   *
+   * @example
+   * // Get the text value for a text run named "subtitle" within a nested group two artboards deep
+   * const subtitleText = riveInstance.getTextRunValueAtPath("subtitle", "group/nestedGroup");
+   *
+   * @remarks
+   * If the text run cannot be found at the specified path, a warning will be logged to the console.
+   *
+   * @deprecated Text run APIs are deprecated: use data binding instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   */
+  public getTextRunValueAtPath(
+    textName: string,
+    path: string,
+  ): string | undefined {
+    warnOnce(DeprecationKeys.textRuns, textRunsDeprecationWarning);
+    const run: rc.TextValueRun = this.retrieveTextAtPath(textName, path);
+    if (!run) {
+      console.warn(
+        `Could not get text with name: '${textName}', at path:'${path}'`,
+      );
+      return;
+    }
+    return run.text;
+  }
+
+  /**
+   * Sets the text value for a specified text run at a given path
+   * @param textName The name of the text run
+   * @param value The new text value to set
+   * @param path The path to the text run within the artboard
+   * @returns void
+   *
+   * @example
+   * // Set the text value for a text run named "title" at one nested artboard deep
+   * riveInstance.setTextRunValueAtPath("title", "New Title", "artboard1");
+   *
+   * @example
+   * // Set the text value for a text run named "subtitle" within a nested group two artboards deep
+   * riveInstance.setTextRunValueAtPath("subtitle", "New Subtitle", "group/nestedGroup");
+   *
+   * @remarks
+   * If the text run cannot be found at the specified path, a warning will be logged to the console.
+   *
+   * @deprecated Text run APIs are deprecated: use data binding instead. See
+   * the upstream Rive documentation
+   * for how to migrate.
+   */
+  public setTextRunValueAtPath(textName: string, value: string, path: string) {
+    warnOnce(DeprecationKeys.textRuns, textRunsDeprecationWarning);
+    const run: rc.TextValueRun = this.retrieveTextAtPath(textName, path);
+    if (!run) {
+      console.warn(
+        `Could not set text with name: '${textName}', at path:'${path}'`,
+      );
+      return;
+    }
+    run.text = value;
+  }
+
+  // Returns a list of playing machine names
+  public get playingStateMachineNames(): string[] {
+    // If the file's not loaded, we got nothing to return
+    if (!this.loaded) {
+      return [];
+    }
+    return this.animator.stateMachines
+      .filter((m) => m.playing)
+      .map((m) => m.name);
+  }
+
+  // Returns a list of playing animation names
+  public get playingAnimationNames(): string[] {
+    // If the file's not loaded, we got nothing to return
+    if (!this.loaded) {
+      return [];
+    }
+    return this.animator.animations.filter((a) => a.playing).map((a) => a.name);
+  }
+
+  // Returns a list of paused animation names
+  public get pausedAnimationNames(): string[] {
+    // If the file's not loaded, we got nothing to return
+    if (!this.loaded) {
+      return [];
+    }
+    return this.animator.animations
+      .filter((a) => !a.playing)
+      .map((a) => a.name);
+  }
+
+  /**
+   *  Returns a list of paused machine names
+   * @returns a list of state machine names that are paused
+   */
+  public get pausedStateMachineNames(): string[] {
+    // If the file's not loaded, we got nothing to return
+    if (!this.loaded) {
+      return [];
+    }
+    return this.animator.stateMachines
+      .filter((m) => !m.playing)
+      .map((m) => m.name);
+  }
+
+  /**
+   * @returns true if any animation is playing
+   */
+  public get isPlaying(): boolean {
+    return this.animator.isPlaying;
+  }
+
+  /**
+   * @returns true if all instanced animations are paused
+   */
+  public get isPaused(): boolean {
+    return this.animator.isPaused;
+  }
+
+  /**
+   * @returns true if no animations are playing or paused
+   */
+  public get isStopped(): boolean {
+    return this.animator?.isStopped ?? true;
+  }
+
+  /**
+   * @returns the bounds of the current artboard, or undefined if the artboard
+   * isn't loaded yet.
+   */
+  public get bounds(): Bounds {
+    return this.artboard ? this.artboard.bounds : undefined;
+  }
+
+  /**
+   * Subscribe to Rive-generated events
+   *
+   * Note: subscribing to {@link EventType.RiveEvent},
+   * {@link EventType.StateChange}, or {@link EventType.Loop} is deprecated;
+   * use data binding instead. See
+   * the upstream Rive documentation on Rive Events and data binding for how
+   * to migrate Rive graphics to a data binding workflow instead.
+   * @param type the type of event to subscribe to
+   * @param callback callback to fire when the event occurs
+   */
+  public on(type: EventType, callback: EventCallback) {
+    if (type === EventType.RiveEvent) {
+      warnOnce(DeprecationKeys.riveEvents, riveEventsDeprecationWarning);
+    } else if (type === EventType.StateChange) {
+      warnOnce(
+        DeprecationKeys.stateChangeEvents,
+        stateChangeEventsDeprecationWarning,
+      );
+    } else if (type === EventType.Loop) {
+      warnOnce(DeprecationKeys.loopEvents, loopEventsDeprecationWarning);
+    }
+    this.eventManager.add({
+      type: type,
+      callback: callback,
+    });
+  }
+
+  /**
+   * Unsubscribes from a Rive-generated event
+   * @param type the type of event to unsubscribe from
+   * @param callback the callback to unsubscribe
+   */
+  public off(type: EventType, callback: EventCallback) {
+    this.eventManager.remove({
+      type: type,
+      callback: callback,
+    });
+  }
+
+  /**
+   * Unsubscribes from a Rive-generated event
+   * @deprecated
+   * @param callback the callback to unsubscribe from
+   */
+  public unsubscribe(type: EventType, callback: EventCallback) {
+    warnOnce(
+      DeprecationKeys.legacyUnsubscribe,
+      "This function is deprecated: please use `off()` instead.",
+    );
+    this.off(type, callback);
+  }
+
+  /**
+   * Unsubscribes all Rive listeners from an event type, or everything if no type is
+   * given
+   * @param type the type of event to unsubscribe from, or all types if
+   * undefined
+   */
+  public removeAllRiveEventListeners(type?: EventType) {
+    this.eventManager.removeAll(type);
+  }
+
+  /**
+   * Unsubscribes all listeners from an event type, or everything if no type is
+   * given
+   * @deprecated
+   * @param type the type of event to unsubscribe from, or all types if
+   * undefined
+   */
+  public unsubscribeAll(type?: EventType) {
+    warnOnce(
+      DeprecationKeys.legacyUnsubscribe,
+      "This function is deprecated: please use `removeAllRiveEventListeners()` instead.",
+    );
+    this.removeAllRiveEventListeners(type);
+  }
+
+  /**
+   * Stops the rendering loop; this is different from pausing in that it doesn't
+   * change the state of any animation. It stops rendering from occurring. This
+   * is designed for situations such as when Rive isn't visible.
+   *
+   * The only way to start rendering again is to call `startRendering`.
+   * Animations that are marked as playing will start from the position that
+   * they would have been at if rendering had not been stopped.
+   */
+  public stopRendering() {
+    this._explicitlyStoppedRendering = true;
+    if (this.loaded && this.frameRequestId) {
+      if (this.runtime.cancelAnimationFrame) {
+        this.runtime.cancelAnimationFrame(this.frameRequestId);
+      } else {
+        cancelAnimationFrame(this.frameRequestId);
+      }
+      this.frameRequestId = null;
+    }
+  }
+
+  /**
+   * Starts the rendering loop if it has been previously stopped. If the
+   * renderer is already active, then this will have zero effect.
+   */
+  public startRendering() {
+    this._explicitlyStoppedRendering = false;
+    this.drawFrame();
+  }
+
+  private scheduleRendering() {
+    if (this.loaded && this.artboard && !this.frameRequestId) {
+      if (this.runtime.requestAnimationFrame) {
+        this.frameRequestId = this.runtime.requestAnimationFrame(
+          this._boundDraw,
+        );
+      } else {
+        this.frameRequestId = requestAnimationFrame(this._boundDraw);
+      }
+    }
+  }
+
+  /**
+   * Called when document.visibilitychange fires (tab change, window minimize, etc.). 
+   * Cancels the rAF loop on hide and resets the time reference so that no accumulated time is
+   * applied to state machines when the tab becomes visible again. This prevents state machine
+   * advances with large time deltas when rAF starts up again.
+   */
+  private _onPageVisibilityChange(): void {
+    if (document.hidden) {
+      if (this.frameRequestId !== null) {
+        if (this.runtime?.cancelAnimationFrame) {
+          this.runtime.cancelAnimationFrame(this.frameRequestId);
+        } else {
+          cancelAnimationFrame(this.frameRequestId);
+        }
+        this.frameRequestId = null;
+      }
+      // Reset so the first resumed frame starts with elapsedTime === 0.
+      this.lastRenderTime = 0;
+    } else if (this.animator?.isPlaying && !this._explicitlyStoppedRendering) {
+      this.scheduleRendering();
+    }
+  }
+
+  /**
+   * Enables frames-per-second (FPS) reporting for the runtime
+   * If no callback is provided, Rive will append a fixed-position div at the top-right corner of
+   * the page with the FPS reading
+   * @param fpsCallback - Callback from the runtime during the RAF loop that supplies the FPS value
+   */
+  public enableFPSCounter(fpsCallback?: FPSCallback) {
+    this.runtime.enableFPSCounter(fpsCallback);
+  }
+
+  /**
+   * Disables frames-per-second (FPS) reporting for the runtime
+   */
+  public disableFPSCounter() {
+    this.runtime.disableFPSCounter();
+  }
+
+  /**
+   * Returns the contents of a Rive file: the artboards, animations, and state machines
+   */
+  public get contents(): RiveFileContents {
+    if (!this.loaded) {
+      return undefined;
+    }
+    const riveContents: RiveFileContents = {
+      artboards: [],
+    };
+    for (let i = 0; i < this.file.artboardCount(); i++) {
+      const artboard = this.file.artboardByIndex(i);
+      const artboardContents: ArtboardContents = {
+        name: artboard.name,
+        animations: [],
+        stateMachines: [],
+      };
+      for (let j = 0; j < artboard.animationCount(); j++) {
+        const animation = artboard.animationByIndex(j);
+        artboardContents.animations.push(animation.name);
+      }
+      for (let k = 0; k < artboard.stateMachineCount(); k++) {
+        const stateMachine = artboard.stateMachineByIndex(k);
+        const name = stateMachine.name;
+        const instance = new this.runtime.StateMachineInstance(
+          stateMachine,
+          artboard,
+        );
+        const inputContents: StateMachineInputContents[] = [];
+        for (let l = 0; l < instance.inputCount(); l++) {
+          const input = instance.input(l);
+          inputContents.push({ name: input.name, type: input.type });
+        }
+        artboardContents.stateMachines.push({
+          name: name,
+          inputs: inputContents,
+        });
+      }
+      riveContents.artboards.push(artboardContents);
+    }
+    return riveContents;
+  }
+
+  /**
+   * Getter / Setter for the volume of the artboard
+   */
+  public get volume(): number {
+    if (this.artboard && this.artboard.volume !== this._volume) {
+      this._volume = this.artboard.volume;
+    }
+    return this._volume;
+  }
+
+  public set volume(value: number) {
+    this._volume = value;
+    if (this.artboard) {
+      this.artboard.volume = value * audioManager.systemVolume;
+    }
+  }
+
+  /**
+   * The width of the artboard.
+   *
+   * This will return 0 if the artboard is not loaded yet and a custom
+   * width has not been set.
+   *
+   * Do not set this value manually when using {@link resizeDrawingSurfaceToCanvas}
+   * with a {@link Layout.fit} of {@link Fit.Layout}, as the artboard width is
+   * automatically set.
+   */
+  public get artboardWidth(): number {
+    if (this.artboard) {
+      return this.artboard.width;
+    }
+    return this._artboardWidth ?? 0;
+  }
+
+  public set artboardWidth(value: number) {
+    this._artboardWidth = value;
+    if (this.artboard) {
+      this.artboard.width = value;
+    }
+  }
+
+  /**
+   * The height of the artboard.
+   *
+   * This will return 0 if the artboard is not loaded yet and a custom
+   * height has not been set.
+   *
+   * Do not set this value manually when using {@link resizeDrawingSurfaceToCanvas}
+   * with a {@link Layout.fit} of {@link Fit.Layout}, as the artboard height is
+   * automatically set.
+   */
+  public get artboardHeight(): number {
+    if (this.artboard) {
+      return this.artboard.height;
+    }
+    return this._artboardHeight ?? 0;
+  }
+
+  public set artboardHeight(value: number) {
+    this._artboardHeight = value;
+
+    if (this.artboard) {
+      this.artboard.height = value;
+    }
+  }
+
+  /**
+   * Reset the artboard size to its original values.
+   */
+  public resetArtboardSize() {
+    if (this.artboard) {
+      this.artboard.resetArtboardSize();
+      this._artboardWidth = this.artboard.width;
+      this._artboardHeight = this.artboard.height;
+    } else {
+      // If the artboard isn't loaded, we need to reset the custom width and height
+      this._artboardWidth = undefined;
+      this._artboardHeight = undefined;
+    }
+  }
+
+  /**
+   * The device pixel ratio used in rendering and canvas/artboard resizing.
+   *
+   * This value will be overidden by the device pixel ratio used in
+   * {@link resizeDrawingSurfaceToCanvas}. If you use that method, do not set this value.
+   */
+  public get devicePixelRatioUsed(): number {
+    return this._devicePixelRatioUsed;
+  }
+
+  public set devicePixelRatioUsed(value: number) {
+    if (value !== this._devicePixelRatioUsed) {
+      this._overlayTransformDirty = true;
+    }
+    this._devicePixelRatioUsed = value;
+    this.reportDisplayScale();
+  }
+
+  // Not per frame: the scale is per file, and instances sharing one would trade
+  // it every frame.
+  private reportDisplayScale(): void {
+    this.file?.displayScale(
+      this._devicePixelRatioUsed * this._layout.layoutScaleFactor,
+    );
+  }
+
+  /**
+   * Sets the main view model instance and applies it (rebinds). Equivalent to
+   * `setViewModelInstance(vmi)` followed by `bind()`.
+   */
+  public bindViewModelInstance(viewModelInstance: ViewModelInstance | null) {
+    if (!viewModelInstance) {
+      return;
+    }
+    this.setViewModelInstance(viewModelInstance);
+    this.bind();
+  }
+
+  /**
+   * Sets the main view model instance in the data context WITHOUT rebinding.
+   * Call {@link bind} to apply. Use this with {@link setGlobalViewModelInstance}
+   * to batch multiple changes into a single rebind.
+   */
+  public setViewModelInstance(viewModelInstance: ViewModelInstance | null) {
+    const runtimeInstance = viewModelInstance?.runtimeInstance;
+    if (
+      !this.artboard ||
+      this.destroyed ||
+      !viewModelInstance ||
+      !runtimeInstance
+    ) {
+      return;
+    }
+    viewModelInstance.internalIncrementReferenceCount();
+    this._viewModelInstance?.cleanup();
+    this._viewModelInstance = viewModelInstance;
+    if (this.animator.stateMachines.length > 0) {
+      this.animator.stateMachines.forEach((stateMachine) =>
+        stateMachine.instance.setViewModelInstance(runtimeInstance),
+      );
+    } else {
+      this.artboard.setViewModelInstance(runtimeInstance);
+    }
+  }
+
+  /**
+   * Applies any pending `set*` view model instance changes by rebinding the
+   * data binds once.
+   * Implicitly creates and binds any view models that have not been set.
+   */
+  public bind() {
+    if (!this.artboard || this.destroyed) {
+      return;
+    }
+    if (this.animator.stateMachines.length > 0) {
+      this.animator.stateMachines.forEach((stateMachine) =>
+        stateMachine.instance.bind(),
+      );
+    } else {
+      this.artboard.bind();
+    }
+  }
+
+  public get viewModelInstance(): ViewModelInstance | null {
+    return this._viewModelInstance;
+  }
+
+  /**
+   * Sets (or replaces) the global view model instance for the given global view
+   * model name in the data context WITHOUT rebinding. The main instance and any
+   * other globals keep their order. Call {@link bind} to apply — batch several
+   * `set*` calls then a single `bind()` to avoid rebinding per set.
+   * @param name - the name of the global view model
+   * @param viewModelInstance - the instance to set for that global
+   * @returns whether the instance was set (false if `name` does not match a
+   * global view model in the file)
+   */
+  public setGlobalViewModelInstance(
+    name: string,
+    viewModelInstance: ViewModelInstance,
+  ): boolean {
+    const runtimeInstance = viewModelInstance?.runtimeInstance;
+    if (!this.artboard || this.destroyed || !runtimeInstance) {
+      return false;
+    }
+    let bound = false;
+    if (this.animator.stateMachines.length > 0) {
+      this.animator.stateMachines.forEach((stateMachine) => {
+        if (
+          stateMachine.instance.setGlobalViewModelInstance(
+            name,
+            runtimeInstance,
+          )
+        ) {
+          bound = true;
+        }
+      });
+    } else {
+      bound = this.artboard.setGlobalViewModelInstance(name, runtimeInstance);
+    }
+    if (bound) {
+      viewModelInstance.internalIncrementReferenceCount();
+      this._globalViewModelInstances.get(name)?.cleanup();
+      this._globalViewModelInstances.set(name, viewModelInstance);
+    }
+    return bound;
+  }
+
+  /**
+   * @param name - the name of the global view model
+   * @returns the global view model instance bound under the given name — the
+   * instance set via {@link setGlobalViewModelInstance} or one created by
+   * auto-bind — or null if none has been set/created for that name (globals are
+   * not auto-created; the getter never creates one).
+   */
+  public globalViewModelInstance(name: string): ViewModelInstance | null {
+    const cached = this._globalViewModelInstances.get(name);
+    if (cached) {
+      return cached;
+    }
+    if (!this.artboard || this.destroyed) {
+      return null;
+    }
+    // State machines share the artboard's data context; query the first one
+    // when present (mirroring how the setter routes), otherwise the artboard.
+    // This is a pure read — it returns null unless an instance was set/bound.
+    const runtimeInstance =
+      this.animator.stateMachines.length > 0
+        ? this.animator.stateMachines[0].instance.globalViewModelInstance(name)
+        : this.artboard.globalViewModelInstance(name);
+    if (runtimeInstance === null) {
+      return null;
+    }
+    const viewModelInstance = new ViewModelInstance(runtimeInstance, null);
+    createFinalization(viewModelInstance, runtimeInstance);
+    viewModelInstance.internalIncrementReferenceCount();
+    this._globalViewModelInstances.set(name, viewModelInstance);
+    return viewModelInstance;
+  }
+
+  /**
+   * @returns the names of the file's global view models, in file order. Use
+   * these with {@link setGlobalViewModelInstance} / {@link globalViewModelInstance}.
+   */
+  public globalViewModelNames(): string[] {
+    return this.file?.globalViewModelNames() ?? [];
+  }
+
+  public viewModelByIndex(index: number): ViewModel | null {
+    const viewModel = this.file.viewModelByIndex(index);
+    if (viewModel !== null) {
+      return new ViewModel(viewModel);
+    }
+    return null;
+  }
+
+  public viewModelByName(name: string): ViewModel | null {
+    return this.riveFile?.viewModelByName(name);
+  }
+
+  public enums(): DataEnum[] {
+    if (this._dataEnums === null) {
+      const dataEnums = this.file.enums();
+      this._dataEnums = dataEnums.map((dataEnum) => {
+        return new DataEnum(dataEnum);
+      });
+    }
+    return this._dataEnums;
+  }
+
+  public defaultViewModel(): ViewModel | null {
+    if (this.artboard) {
+      const viewModel = this.file.defaultArtboardViewModel(this.artboard);
+      if (viewModel) {
+        return new ViewModel(viewModel);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * @deprecated This function is deprecated. For better stability and memory management
+   * use `getBindableArtboard()` instead.
+   * @param {string} name - The name of the artboard.
+   * @returns {Artboard} The artboard to bind to.
+   */
+  public getArtboard(name: string): Artboard | null {
+    return this.riveFile?.getArtboard(name) ?? null;
+  }
+
+  public getBindableArtboard(name: string): BindableArtboard | null {
+    return this.riveFile?.getBindableArtboard(name) ?? null;
+  }
+
+  public getDefaultBindableArtboard(): BindableArtboard | null {
+    return this.riveFile?.getDefaultBindableArtboard() ?? null;
+  }
+
+  /**
+   * Clear focus applicable to active state machines with focus nodes. Useful if users want to
+   * reset focus state and behavior within the Rive graphic at any point (i.e. blurring off the canvas)
+   */
+  public clearFocus(): void {
+    const playingStateMachines = this.animator.stateMachines.filter((sm) => sm.playing && sm.hasFocusNodes);
+    playingStateMachines.forEach((sm) => sm.clearFocus());
+  }
+
+}
+
+export enum DataType {
+  none = 'none',
+  string = 'string',
+  number = 'number',
+  boolean = 'boolean',
+  color = 'color',
+  list = 'list',
+  enumType = 'enumType',
+  trigger = 'trigger',
+  viewModel = 'viewModel',
+  integer = 'integer',
+  listIndex = 'listIndex',
+  image = 'image',
+  artboard = 'artboard',
+}
+
+export class ViewModel {
+  private _viewModel: rc.ViewModel;
+
+  constructor(viewModel: rc.ViewModel) {
+    this._viewModel = viewModel;
+  }
+
+  public get instanceCount(): number {
+    return this._viewModel.instanceCount;
+  }
+
+  public get name(): string {
+    return this._viewModel.name;
+  }
+
+  public instanceByIndex(index: number): ViewModelInstance | null {
+    const instance = this._viewModel.instanceByIndex(index);
+    if (instance !== null) {
+      const viewModelInstance = new ViewModelInstance(instance, null);
+      createFinalization(viewModelInstance, instance);
+      return viewModelInstance;
+    }
+    return null;
+  }
+
+  public instanceByName(name: string): ViewModelInstance | null {
+    const instance = this._viewModel.instanceByName(name);
+    if (instance !== null) {
+      const viewModelInstance = new ViewModelInstance(instance, null);
+      createFinalization(viewModelInstance, instance);
+      return viewModelInstance;
+    }
+    return null;
+  }
+
+  public defaultInstance(): ViewModelInstance | null {
+    const runtimeInstance = this._viewModel.defaultInstance();
+    if (runtimeInstance !== null) {
+      const viewModelInstance = new ViewModelInstance(runtimeInstance, null);
+      createFinalization(viewModelInstance, runtimeInstance);
+      return viewModelInstance;
+    }
+    return null;
+  }
+
+  public instance(): ViewModelInstance {
+    const runtimeInstance = this._viewModel.instance();
+    if (runtimeInstance !== null) {
+      const viewModelInstance = new ViewModelInstance(runtimeInstance, null);
+      createFinalization(viewModelInstance, runtimeInstance);
+      return viewModelInstance;
+    }
+    return null;
+  }
+
+  public get properties(): rc.ViewModelProperty[] {
+    return this._viewModel.getProperties();
+  }
+
+  public get instanceNames(): string[] {
+    return this._viewModel.getInstanceNames();
+  }
+}
+
+export class DataEnum {
+  private _dataEnum: rc.DataEnum;
+
+  constructor(dataEnum: rc.DataEnum) {
+    this._dataEnum = dataEnum;
+  }
+
+  public get name(): string {
+    return this._dataEnum.name;
+  }
+
+  public get values(): string[] {
+    return this._dataEnum.values;
+  }
+}
+
+enum PropertyType {
+  Number = "number",
+  String = "string",
+  Boolean = "boolean",
+  Color = "color",
+  Trigger = "trigger",
+  Enum = "enum",
+  List = "list",
+  Image = "image",
+  Font = "font",
+  Artboard = "artboard",
+}
+
+export class ViewModelInstance {
+  private _runtimeInstance: rc.ViewModelInstance | null;
+
+  private _parents: ViewModelInstance[] = [];
+
+  private _children: ViewModelInstance[] = [];
+
+  private _viewModelInstances: Map<string, ViewModelInstance> = new Map();
+
+  private _propertiesWithCallbacks: ViewModelInstanceValue[] = [];
+
+  private _referenceCount = 0;
+
+  public selfUnref: boolean = false;
+
+  constructor(
+    runtimeInstance: rc.ViewModelInstance,
+    parent: ViewModelInstance | null,
+  ) {
+    this._runtimeInstance = runtimeInstance;
+    if (parent !== null) {
+      this._parents.push(parent);
+    }
+  }
+
+  public get runtimeInstance(): rc.ViewModelInstance | null {
+    return this._runtimeInstance;
+  }
+
+  public get nativeInstance(): rc.ViewModelInstance | null {
+    return this._runtimeInstance;
+  }
+
+  public handleCallbacks() {
+    if (this._propertiesWithCallbacks.length !== 0) {
+      this._propertiesWithCallbacks.forEach((property) => {
+        property.handleCallbacks();
+      });
+      this._propertiesWithCallbacks.forEach((property) => {
+        property.clearChanges();
+      });
+    }
+    this._children.forEach((child) => child.handleCallbacks());
+  }
+
+  public addParent(parent: ViewModelInstance) {
+    if (!this._parents.includes(parent)) {
+      this._parents.push(parent);
+      if (
+        this._propertiesWithCallbacks.length > 0 ||
+        this._children.length > 0
+      ) {
+        parent.addToViewModelCallbacks(this);
+      }
+    }
+  }
+
+  public removeParent(parent: ViewModelInstance) {
+    const index = this._parents.indexOf(parent);
+    if (index !== -1) {
+      const parent = this._parents[index];
+      parent.removeFromViewModelCallbacks(this);
+      this._parents.splice(index, 1);
+    }
+  }
+
+  /*
+   * method for internal use, it shouldn't be called externally
+   */
+  public addToPropertyCallbacks(property: ViewModelInstanceValue) {
+    if (!this._propertiesWithCallbacks.includes(property)) {
+      this._propertiesWithCallbacks.push(property);
+      if (this._propertiesWithCallbacks.length > 0) {
+        this._parents.forEach((parent) => {
+          parent.addToViewModelCallbacks(this);
+        });
+      }
+    }
+  }
+
+  /*
+   * method for internal use, it shouldn't be called externally
+   */
+  public removeFromPropertyCallbacks(property: ViewModelInstanceValue) {
+    if (this._propertiesWithCallbacks.includes(property)) {
+      this._propertiesWithCallbacks = this._propertiesWithCallbacks.filter(
+        (prop) => prop !== property,
+      );
+      if (
+        this._children.length === 0 &&
+        this._propertiesWithCallbacks.length === 0
+      ) {
+        this._parents.forEach((parent) => {
+          parent.removeFromViewModelCallbacks(this);
+        });
+      }
+    }
+  }
+
+  /*
+   * method for internal use, it shouldn't be called externally
+   */
+  public addToViewModelCallbacks(instance: ViewModelInstance) {
+    if (!this._children.includes(instance)) {
+      this._children.push(instance);
+      this._parents.forEach((parent) => {
+        parent.addToViewModelCallbacks(this);
+      });
+    }
+  }
+
+  /*
+   * method for internal use, it shouldn't be called externally
+   */
+  public removeFromViewModelCallbacks(instance: ViewModelInstance) {
+    if (this._children.includes(instance)) {
+      this._children = this._children.filter((child) => child !== instance);
+      if (
+        this._children.length === 0 &&
+        this._propertiesWithCallbacks.length === 0
+      ) {
+        this._parents.forEach((parent) => {
+          parent.removeFromViewModelCallbacks(this);
+        });
+      }
+    }
+  }
+
+  private clearCallbacks() {
+    this._propertiesWithCallbacks.forEach((property) => {
+      property.clearCallbacks();
+    });
+  }
+
+  private propertyFromPath(
+    path: string,
+    type: PropertyType,
+  ): ViewModelInstanceValue | null {
+    const pathSegments = path.split("/");
+    return this.propertyFromPathSegments(pathSegments, 0, type);
+  }
+
+  private viewModelFromPathSegments(
+    pathSegments: string[],
+    index: number,
+  ): ViewModelInstance | null {
+    const viewModelInstance = this.internalViewModelInstance(
+      pathSegments[index],
+    );
+    if (viewModelInstance !== null) {
+      if (index == pathSegments.length - 1) {
+        return viewModelInstance;
+      } else {
+        return viewModelInstance.viewModelFromPathSegments(
+          pathSegments,
+          index++,
+        );
+      }
+    }
+    return null;
+  }
+
+  private propertyFromPathSegments(
+    pathSegments: string[],
+    index: number,
+    type: PropertyType,
+  ): ViewModelInstanceValue | null {
+    if (index < pathSegments.length - 1) {
+      const viewModelInstance = this.internalViewModelInstance(
+        pathSegments[index],
+      );
+      if (viewModelInstance !== null) {
+        return viewModelInstance.propertyFromPathSegments(
+          pathSegments,
+          index + 1,
+          type,
+        );
+      } else {
+        return null;
+      }
+    }
+    let instance: rc.ViewModelInstanceValue | null = null;
+    switch (type) {
+      case PropertyType.Number:
+        instance = this._runtimeInstance?.number(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceNumber(
+            instance as rc.ViewModelInstanceNumber,
+            this,
+          );
+        }
+        break;
+      case PropertyType.String:
+        instance = this._runtimeInstance?.string(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceString(
+            instance as rc.ViewModelInstanceString,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Boolean:
+        instance = this._runtimeInstance?.boolean(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceBoolean(
+            instance as rc.ViewModelInstanceBoolean,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Color:
+        instance = this._runtimeInstance?.color(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceColor(
+            instance as rc.ViewModelInstanceColor,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Trigger:
+        instance = this._runtimeInstance?.trigger(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceTrigger(
+            instance as rc.ViewModelInstanceTrigger,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Enum:
+        instance = this._runtimeInstance?.enum(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceEnum(
+            instance as rc.ViewModelInstanceEnum,
+            this,
+          );
+        }
+        break;
+      case PropertyType.List:
+        instance = this._runtimeInstance?.list(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceList(
+            instance as rc.ViewModelInstanceList,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Image:
+        instance = this._runtimeInstance?.image(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceAssetImage(
+            instance as rc.ViewModelInstanceAssetImage,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Font:
+        instance = this._runtimeInstance?.font(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceAssetFont(
+            instance as rc.ViewModelInstanceAssetFont,
+            this,
+          );
+        }
+        break;
+      case PropertyType.Artboard:
+        instance = this._runtimeInstance?.artboard(pathSegments[index]) ?? null;
+        if (instance !== null) {
+          return new ViewModelInstanceArtboard(
+            instance as rc.ViewModelInstanceArtboard,
+            this,
+          );
+        }
+        break;
+    }
+    return null;
+  }
+
+  private internalViewModelInstance(name: string): ViewModelInstance | null {
+    if (this._viewModelInstances.has(name)) {
+      return this._viewModelInstances.get(name)!;
+    }
+    const viewModelRuntimeInstance = this._runtimeInstance?.viewModel(name);
+    if (viewModelRuntimeInstance !== null) {
+      const viewModelInstance = new ViewModelInstance(
+        viewModelRuntimeInstance!,
+        this,
+      );
+      createFinalization(viewModelInstance, viewModelRuntimeInstance);
+      viewModelInstance.internalIncrementReferenceCount();
+      this._viewModelInstances.set(name, viewModelInstance);
+      return viewModelInstance;
+    }
+    return null;
+  }
+
+  /**
+   * method to access a property instance of type number belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the number property
+   */
+  public number(path: string): ViewModelInstanceNumber | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Number,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceNumber;
+  }
+
+  /**
+   * method to access a property instance of type string belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the string property
+   */
+  public string(path: string): ViewModelInstanceString | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.String,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceString | null;
+  }
+
+  /**
+   * method to access a property instance of type boolean belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the boolean property
+   */
+  public boolean(path: string): ViewModelInstanceBoolean | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Boolean,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceBoolean | null;
+  }
+
+  /**
+   * method to access a property instance of type color belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the ttrigger property
+   */
+  public color(path: string): ViewModelInstanceColor | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Color,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceColor | null;
+  }
+
+  /**
+   * method to access a property instance of type trigger belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the trigger property
+   */
+  public trigger(path: string): ViewModelInstanceTrigger | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Trigger,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceTrigger | null;
+  }
+
+  /**
+   * method to access a property instance of type enum belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the enum property
+   */
+  public enum(path: string): ViewModelInstanceEnum | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Enum,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceEnum | null;
+  }
+
+  /**
+   * method to access a property instance of type list belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the list property
+   */
+  public list(path: string): ViewModelInstanceList | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.List,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceList | null;
+  }
+
+  /**
+   * method to access a view model property instance belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the image property
+   */
+  public image(path: string): ViewModelInstanceAssetImage | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Image,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceAssetImage | null;
+  }
+
+  /**
+   * method to access a view model property instance belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the font property
+   */
+  public font(path: string): ViewModelInstanceAssetFont | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Font,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceAssetFont | null;
+  }
+
+  /**
+   * method to access an artboard property instance belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the image property
+   */
+  public artboard(path: string): ViewModelInstanceArtboard | null {
+    const viewmodelInstanceValue = this.propertyFromPath(
+      path,
+      PropertyType.Artboard,
+    );
+    return viewmodelInstanceValue as ViewModelInstanceArtboard | null;
+  }
+
+  /**
+   * method to access a view model property instance belonging
+   * to the view model instance or to a nested view model instance
+   * @param path - path to the view model property
+   */
+  public viewModel(path: string): ViewModelInstance | null {
+    const pathSegments = path.split("/");
+    const parentViewModelInstance =
+      pathSegments.length > 1
+        ? this.viewModelFromPathSegments(
+            pathSegments.slice(0, pathSegments.length - 1),
+            0,
+          )
+        : this;
+    if (parentViewModelInstance != null) {
+      return parentViewModelInstance.internalViewModelInstance(
+        pathSegments[pathSegments.length - 1],
+      );
+    }
+    return null;
+  }
+
+  public internalReplaceViewModel(
+    name: string,
+    value: ViewModelInstance,
+  ): boolean {
+    if (value.runtimeInstance !== null) {
+      const result =
+        this._runtimeInstance?.replaceViewModel(name, value.runtimeInstance!) ||
+        false;
+      if (result) {
+        value.internalIncrementReferenceCount();
+        const oldInstance = this.internalViewModelInstance(name);
+        if (oldInstance !== null) {
+          oldInstance.removeParent(this);
+          if (this._children.includes(oldInstance)) {
+            this._children = this._children.filter(
+              (child) => child !== oldInstance,
+            );
+          }
+          oldInstance.cleanup();
+        }
+        this._viewModelInstances.set(name, value);
+        value.addParent(this);
+      }
+      return result;
+    }
+    return false;
+  }
+
+  /**
+   * method to replace a view model property with another view model value
+   * @param path - path to the view model property
+   * @param value - view model that will replace the original
+   */
+  public replaceViewModel(path: string, value: ViewModelInstance): boolean {
+    const pathSegments = path.split("/");
+    const viewModelInstance =
+      pathSegments.length > 1
+        ? this.viewModelFromPathSegments(
+            pathSegments.slice(0, pathSegments.length - 1),
+            0,
+          )
+        : this;
+    return (
+      viewModelInstance?.internalReplaceViewModel(
+        pathSegments[pathSegments.length - 1],
+        value,
+      ) ?? false
+    );
+  }
+
+  /*
+   * method to add one to the reference counter of the instance.
+   * Use if the file owning the reference is destroyed but the instance needs to stay around
+   */
+  public incrementReferenceCount() {
+    this._referenceCount++;
+    this._runtimeInstance?.incrementReferenceCount();
+  }
+
+  /*
+   * method to subtract one to the reference counter of the instance.
+   * Use if incrementReferenceCount has been called
+   */
+  public decrementReferenceCount() {
+    this._referenceCount--;
+    this._runtimeInstance?.decrementReferenceCount();
+  }
+
+  public get properties(): rc.ViewModelProperty[] {
+    return (
+      this._runtimeInstance?.getProperties().map((prop) => ({ ...prop })) || []
+    );
+  }
+
+  /**
+   * Get the name of the ViewModel definition this instance was created from.
+   */
+  public get viewModelName(): string {
+    return this._runtimeInstance?.getViewModelName() ?? "";
+  }
+
+  public internalIncrementReferenceCount() {
+    this._referenceCount++;
+  }
+
+  public cleanup() {
+    this._referenceCount--;
+    if (this._referenceCount <= 0) {
+      if (this.selfUnref) {
+        this._runtimeInstance?.unref();
+      }
+      this._runtimeInstance = null;
+      this.clearCallbacks();
+      this._propertiesWithCallbacks = [];
+      this._viewModelInstances.forEach((value) => {
+        value.cleanup();
+      });
+      this._viewModelInstances.clear();
+      const children = [...this._children];
+      this._children.length = 0;
+      const parents = [...this._parents];
+      this._parents.length = 0;
+      children.forEach((child) => {
+        child.removeParent(this);
+      });
+      parents.forEach((parent) => {
+        parent.removeFromViewModelCallbacks(this);
+      });
+    }
+  }
+}
+
+export class ViewModelInstanceValue {
+  protected _parentViewModel: ViewModelInstance;
+  protected callbacks: EventCallback[] = [];
+  protected _viewModelInstanceValue: rc.ViewModelInstanceValue;
+  constructor(instance: rc.ViewModelInstanceValue, parent: ViewModelInstance) {
+    this._viewModelInstanceValue = instance;
+    this._parentViewModel = parent;
+  }
+
+  public on(callback: EventCallback) {
+    // Since we don't clean the changed flag for properties that don't have listeners,
+    // we clean it the first time we add a listener to it
+    if (this.callbacks.length === 0) {
+      this._viewModelInstanceValue.clearChanges();
+    }
+    if (!this.callbacks.includes(callback)) {
+      this.callbacks.push(callback);
+      this._parentViewModel.addToPropertyCallbacks(this);
+    }
+  }
+  public off(callback?: EventCallback) {
+    if (!callback) {
+      this.callbacks.length = 0;
+    } else {
+      this.callbacks = this.callbacks.filter((cb) => cb !== callback);
+    }
+    if (this.callbacks.length === 0) {
+      this._parentViewModel.removeFromPropertyCallbacks(this);
+    }
+  }
+  public internalHandleCallback(callback: Function) {}
+
+  public handleCallbacks() {
+    if (this._viewModelInstanceValue.hasChanged) {
+      this.callbacks.forEach((callback) => {
+        this.internalHandleCallback(callback);
+      });
+    }
+  }
+
+  public clearChanges() {
+    this._viewModelInstanceValue.clearChanges();
+  }
+
+  public clearCallbacks() {
+    this.callbacks.length = 0;
+  }
+
+  public get name() {
+    return this._viewModelInstanceValue.name;
+  }
+}
+
+export class ViewModelInstanceString extends ViewModelInstanceValue {
+  constructor(instance: rc.ViewModelInstanceString, parent: ViewModelInstance) {
+    super(instance, parent);
+  }
+
+  public get value(): string {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceString).value;
+  }
+
+  public set value(val: string) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceString).value = val;
+  }
+  public internalHandleCallback(callback: Function) {
+    callback(this.value);
+  }
+}
+
+export class ViewModelInstanceNumber extends ViewModelInstanceValue {
+  constructor(instance: rc.ViewModelInstanceNumber, parent: ViewModelInstance) {
+    super(instance, parent);
+  }
+
+  public get value(): number {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceNumber).value;
+  }
+
+  public set value(val: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceNumber).value = val;
+  }
+  public internalHandleCallback(callback: Function) {
+    callback(this.value);
+  }
+}
+
+export class ViewModelInstanceBoolean extends ViewModelInstanceValue {
+  constructor(
+    instance: rc.ViewModelInstanceBoolean,
+    parent: ViewModelInstance,
+  ) {
+    super(instance, parent);
+  }
+
+  public get value(): boolean {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceBoolean).value;
+  }
+
+  public set value(val: boolean) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceBoolean).value = val;
+  }
+  public internalHandleCallback(callback: Function) {
+    callback(this.value);
+  }
+}
+
+export class ViewModelInstanceTrigger extends ViewModelInstanceValue {
+  constructor(
+    instance: rc.ViewModelInstanceTrigger,
+    parent: ViewModelInstance,
+  ) {
+    super(instance, parent);
+  }
+
+  public trigger(): void {
+    return (
+      this._viewModelInstanceValue as rc.ViewModelInstanceTrigger
+    ).trigger();
+  }
+
+  public internalHandleCallback(callback: Function) {
+    callback();
+  }
+}
+
+export class ViewModelInstanceEnum extends ViewModelInstanceValue {
+  constructor(instance: rc.ViewModelInstanceEnum, parent: ViewModelInstance) {
+    super(instance, parent);
+  }
+
+  public get value(): string {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceEnum).value;
+  }
+
+  public set value(val: string) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceEnum).value = val;
+  }
+
+  public set valueIndex(val: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceEnum).valueIndex = val;
+  }
+
+  public get valueIndex(): number {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceEnum)
+      .valueIndex;
+  }
+
+  public get values(): string[] {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceEnum).values;
+  }
+
+  public internalHandleCallback(callback: Function) {
+    callback(this.value);
+  }
+}
+
+export class ViewModelInstanceList extends ViewModelInstanceValue {
+  constructor(instance: rc.ViewModelInstanceList, parent: ViewModelInstance) {
+    super(instance, parent);
+  }
+
+  public get length(): number {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceList).size;
+  }
+
+  public addInstance(instance: ViewModelInstance) {
+    if (instance.runtimeInstance != null) {
+      (this._viewModelInstanceValue as rc.ViewModelInstanceList).addInstance(
+        instance.runtimeInstance!,
+      );
+      instance.addParent(this._parentViewModel);
+    }
+  }
+
+  public addInstanceAt(instance: ViewModelInstance, index: number): boolean {
+    if (instance.runtimeInstance != null) {
+      if (
+        (
+          this._viewModelInstanceValue as rc.ViewModelInstanceList
+        ).addInstanceAt(instance.runtimeInstance!, index)
+      ) {
+        instance.addParent(this._parentViewModel);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public removeInstance(instance: ViewModelInstance) {
+    if (instance.runtimeInstance != null) {
+      (this._viewModelInstanceValue as rc.ViewModelInstanceList).removeInstance(
+        instance.runtimeInstance!,
+      );
+      instance.removeParent(this._parentViewModel);
+    }
+  }
+
+  public removeInstanceAt(index: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceList).removeInstanceAt(
+      index,
+    );
+  }
+
+  public instanceAt(index: number): ViewModelInstance | null {
+    const runtimeInstance = (
+      this._viewModelInstanceValue as rc.ViewModelInstanceList
+    ).instanceAt(index);
+    if (runtimeInstance != null) {
+      const viewModelInstance = new ViewModelInstance(
+        runtimeInstance,
+        this._parentViewModel,
+      );
+      createFinalization(viewModelInstance, runtimeInstance);
+      return viewModelInstance;
+    }
+    return null;
+  }
+
+  public swap(a: number, b: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceList).swap(a, b);
+  }
+
+  public internalHandleCallback(callback: Function) {
+    callback();
+  }
+}
+
+export class ViewModelInstanceColor extends ViewModelInstanceValue {
+  constructor(instance: rc.ViewModelInstanceColor, parent: ViewModelInstance) {
+    super(instance, parent);
+  }
+
+  public get value(): number {
+    return (this._viewModelInstanceValue as rc.ViewModelInstanceColor).value;
+  }
+
+  public set value(val: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceColor).value = val;
+  }
+
+  public rgb(r: number, g: number, b: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceColor).rgb(r, g, b);
+  }
+
+  public rgba(r: number, g: number, b: number, a: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceColor).argb(
+      a,
+      r,
+      g,
+      b,
+    );
+  }
+
+  public argb(a: number, r: number, g: number, b: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceColor).argb(
+      a,
+      r,
+      g,
+      b,
+    );
+  }
+
+  // Value 0 to 255
+  public alpha(a: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceColor).alpha(a);
+  }
+
+  // Value 0 to 1
+  public opacity(o: number) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceColor).alpha(
+      Math.round(Math.max(0, Math.min(1, o)) * 255),
+    );
+  }
+  public internalHandleCallback(callback: Function) {
+    callback(this.value);
+  }
+}
+
+export class ViewModelInstanceAssetImage extends ViewModelInstanceValue {
+  constructor(
+    instance: rc.ViewModelInstanceAssetImage,
+    root: ViewModelInstance,
+  ) {
+    super(instance, root);
+  }
+
+  public set value(image: rc.Image | null) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceAssetImage).value(
+      image?.nativeImage ?? null,
+    );
+  }
+
+  public internalHandleCallback(callback: Function) {
+    callback();
+  }
+}
+
+export class ViewModelInstanceAssetFont extends ViewModelInstanceValue {
+  constructor(
+    instance: rc.ViewModelInstanceAssetFont,
+    root: ViewModelInstance,
+  ) {
+    super(instance, root);
+  }
+
+  public set value(font: rc.Font | null) {
+    (this._viewModelInstanceValue as rc.ViewModelInstanceAssetFont).value(
+      font?.nativeFont ?? null,
+    );
+  }
+
+  public internalHandleCallback(callback: Function) {
+    callback();
+  }
+}
+
+export class ViewModelInstanceArtboard extends ViewModelInstanceValue {
+  constructor(instance: rc.ViewModelInstanceArtboard, root: ViewModelInstance) {
+    super(instance, root);
+  }
+
+  public set value(artboard: BaseArtboard | null) {
+    let bindableArtboard: BindableArtboard;
+    if (artboard.isBindableArtboard) {
+      bindableArtboard = artboard as BindableArtboard;
+    } else {
+      bindableArtboard = (
+        artboard as Artboard
+      ).file.internalBindableArtboardFromArtboard(
+        (artboard as Artboard).nativeArtboard,
+      );
+    }
+    (this._viewModelInstanceValue as rc.ViewModelInstanceArtboard).value(
+      bindableArtboard?.nativeArtboard ?? null,
+    );
+    if (bindableArtboard?.nativeViewModel) {
+      (
+        this._viewModelInstanceValue as rc.ViewModelInstanceArtboard
+      ).viewModelInstance(bindableArtboard?.nativeViewModel ?? null);
+    }
+  }
+
+  public internalHandleCallback(callback: Function) {
+    callback();
+  }
+}
+
+/**
+ * Contents of a state machine input
+ */
+interface StateMachineInputContents {
+  name: string;
+  type: StateMachineInputType;
+  initialValue?: boolean | number;
+}
+
+/**
+ * Contents of a state machine
+ */
+interface StateMachineContents {
+  name: string;
+  inputs: StateMachineInputContents[];
+}
+
+/**
+ * Contents of an artboard
+ */
+interface ArtboardContents {
+  animations: string[];
+  stateMachines: StateMachineContents[];
+  name: string;
+}
+
+/**
+ * contents of a Rive file
+ */
+interface RiveFileContents {
+  artboards?: ArtboardContents[];
+}
+
+// Loads Rive data from a URI via fetch.
+const loadRiveFile = async (src: string): Promise<ArrayBuffer> => {
+  const req = new Request(src);
+  const res = await fetch(req);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch the file: HTTP ${res.status}`);
+  }
+  const buffer = await res.arrayBuffer();
+  return buffer;
+};
+
+// #endregion
+
+// #region utility functions
+
+/*
+ * Utility function to ensure an object is a string array
+ */
+const mapToStringArray = (obj?: string[] | string | undefined): string[] => {
+  if (typeof obj === "string") {
+    return [obj];
+  } else if (obj instanceof Array) {
+    return obj;
+  }
+  // If obj is undefined, return empty array
+  return [];
+};
+
+// #endregion
+
+// #region testing utilities
+
+// Exports to only be used for tests
+export const Testing = {
+  EventManager: EventManager,
+  TaskQueueManager: TaskQueueManager,
+};
+
+// #endregion
+
+// #region asset loaders
+
+/**
+ * Decodes bytes into an audio asset.
+ *
+ * Be sure to call `.unref()` on the audio once it is no longer needed. This
+ * allows the engine to clean it up when it is not used by any more animations.
+ */
+export const decodeAudio = async (
+  bytes: Uint8Array,
+): Promise<AudioWrapper> => {
+  const decodedPromise = new Promise<rc.Audio>((resolve) =>
+    RuntimeLoader.getInstance((rive: rc.RiveCanvas): void => {
+      rive.decodeAudio(bytes, resolve, null);
+    }),
+  );
+  const audio: rc.Audio = await decodedPromise;
+  const audioWrapper = new AudioWrapper(audio);
+  finalizationRegistry.register(audioWrapper, audio);
+  return audioWrapper;
+};
+
+/**
+ * Decodes bytes into an image.
+ *
+ * Be sure to call `.unref()` on the image once it is no longer needed. This
+ * allows the engine to clean it up when it is not used by any more animations.
+ */
+export const decodeImage = async (
+  bytes: Uint8Array,
+): Promise<ImageWrapper> => {
+  // Immediate-typed on purpose, even for deferred files: the recorder routes
+  // images it didn't make through the session's ForeignImageRegistry at draw,
+  // so callers never need to know which mode their file imported in.
+  const decodedPromise = new Promise<rc.Image>((resolve) =>
+    RuntimeLoader.getInstance((rive: rc.RiveCanvas): void => {
+      rive.decodeImage(bytes, resolve, null);
+    }),
+  );
+  const image: rc.Image = await decodedPromise;
+  const imageWrapper = new ImageWrapper(image);
+  finalizationRegistry.register(imageWrapper, image);
+  return imageWrapper;
+};
+
+/**
+ * Decodes bytes into a font.
+ *
+ * Be sure to call `.unref()` on the font once it is no longer needed. This
+ * allows the engine to clean it up when it is not used by any more animations.
+ */
+export const decodeFont = async (
+  bytes: Uint8Array,
+): Promise<FontWrapper> => {
+  const decodedPromise = new Promise<rc.Font>((resolve) =>
+    RuntimeLoader.getInstance((rive: rc.RiveCanvas): void => {
+      rive.decodeFont(bytes, resolve, null);
+    }),
+  );
+  const font: rc.Font = await decodedPromise;
+  const fontWrapper = new FontWrapper(font);
+  finalizationRegistry.register(fontWrapper, font);
+  return fontWrapper;
+};
+
+// #endregion

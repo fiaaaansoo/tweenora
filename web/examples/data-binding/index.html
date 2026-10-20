@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Data binding examples</title>
+</head>
+<body>
+<h1>Data binding and view models</h1>
+<p>Prepare the assets with <code>python web/examples/prepare_assets.py</code>; each page accepts a
+<code>.twno</code> or a <code>.riv</code> in <code>?file=</code>. Binding only applies while a state machine plays
+(<code>&amp;stateMachine=</code>, "State Machine 1" by default).</p>
+<ul>
+  <li><a href="values.html?file=/assets/data_binding_test.twno&amp;artboard=artboard-1&amp;stateMachine=State%20Machine%201">values.html</a>: <code>String</code>, <code>Number</code>, <code>Boolean</code>, <code>Trigger</code>, <code>Color</code>, <code>Enum</code>, observation with <code>on</code> and <code>off</code> (<code>data_binding_test</code>, <code>custom_property_enum</code>, <code>data_binding_test_triggers</code>).</li>
+  <li><a href="lists.html?file=/assets/list_items.twno">lists.html</a>: lists (<code>list_items</code>).</li>
+  <li><a href="assets.html?file=/assets/data_binding_images_test.twno">assets.html</a>: bound images, fonts and artboards (<code>data_binding_images_test</code>, <code>data_bind_font_test</code>, <code>data_binding_artboards_test</code>).</li>
+  <li><a href="viewmodels.html?file=/assets/data_binding_test.twno&amp;autobind=1">viewmodels.html</a>: view models, instances, <code>DataEnum</code>, binding, global view models (<code>global_viewmodels_test</code>), nested properties (<code>data_binding_images_test</code>).</li>
+</ul>
+</body>
+</html>

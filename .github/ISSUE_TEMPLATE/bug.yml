@@ -1,0 +1,35 @@
+name: Report a bug
+description: Incorrect behavior of the runtime, the web player, the demo or the tools.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security vulnerability, do not open a public issue: see `SECURITY.md`.
+        For a file whose rights you hold, use the "File takedown request" template.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happens
+      description: The behavior you observed and the one you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce it
+      description: The steps, and the `.twno` or `.riv` file if you can share it (otherwise describe it).
+    validations:
+      required: true
+  - type: input
+    id: environnement
+    attributes:
+      label: Environment
+      description: Browser and version, operating system, graphics card if rendering is involved, commit or package version.
+    validations:
+      required: true
+  - type: textarea
+    id: rendu
+    attributes:
+      label: Rendering difference (optional)
+      description: If you are comparing with another player, a capture from each and the version of the other player.

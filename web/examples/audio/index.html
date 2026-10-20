@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Audio examples</title>
+</head>
+<body>
+<h1>Audio</h1>
+<p>Prepare the assets with <code>python web/examples/prepare_assets.py</code>; the page accepts a
+<code>.twno</code> or a <code>.riv</code> in <code>?file=</code>. The browser only allows sound after a user gesture.</p>
+<ul>
+  <li><a href="audio.html?file=/assets/sound.twno">audio.html</a>: embedded audio driven by a number (<code>sound</code>), volume, <code>AudioContext</code> state.</li>
+  <li><a href="audio.html?file=/assets/sound2.twno&amp;artboard=grand-parent">sound2, nested artboard</a> (<code>child</code>, <code>parent</code>, <code>grand-parent</code>, <code>no-audio</code>).</li>
+  <li><a href="audio.html?file=/assets/hosted_audio_file.twno&amp;hosted=/assets/what.wav">hosted audio</a>: <code>assetLoader</code> with <code>what.wav</code> (<code>&amp;hosted=</code>).</li>
+</ul>
+</body>
+</html>

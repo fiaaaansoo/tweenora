@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>View models, instances and binding</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+
+  ex.start(function () {
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || "State Machine 1",
+      autoplay: true,
+      autoBind: ex.params.get("autobind") === "1",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    function summary(viewModel) {
+      return {
+        name: viewModel.name,
+        instanceCount: viewModel.instanceCount,
+        instanceNames: viewModel.instanceNames,
+        properties: viewModel.properties.map(function (property) {
+          return { name: property.name, type: property.type };
+        }),
+      };
+    }
+
+    twnoCheck.instance = instance;
+    twnoCheck.dataTypes = Object.values(rive.DataType);
+    twnoCheck.viewModels = function () {
+      var list = [];
+      for (var index = 0; index < instance.viewModelCount; index += 1) {
+        list.push(summary(instance.viewModelByIndex(index)));
+      }
+      document.getElementById("info").textContent = JSON.stringify(list, null, 2);
+      return list;
+    };
+    twnoCheck.byName = function (name) {
+      var viewModel = instance.viewModelByName(name);
+      return viewModel && summary(viewModel);
+    };
+    twnoCheck.defaultViewModel = function () { return summary(instance.defaultViewModel()); };
+    twnoCheck.enums = function () {
+      return instance.enums().map(function (dataEnum) {
+        return { name: dataEnum.name, values: dataEnum.values };
+      });
+    };
+    twnoCheck.instances = function (viewModelName, instanceName) {
+      var viewModel = instance.viewModelByName(viewModelName);
+      return {
+        byIndex: viewModel.instanceByIndex(0) !== null,
+        byName: instanceName ? viewModel.instanceByName(instanceName) !== null : null,
+        missing: viewModel.instanceByName("absent") === null,
+        defaultInstance: viewModel.defaultInstance() !== null,
+        blank: viewModel.instance() !== null,
+      };
+    };
+    twnoCheck.bindBy = function (mode, viewModelName) {
+      var created = instance.viewModelByName(viewModelName).instance();
+      if (mode === "bind") {
+        instance.bindViewModelInstance(created);
+      } else {
+        instance.setViewModelInstance(created);
+        instance.bind();
+      }
+      return instance.viewModelInstance !== null;
+    };
+    twnoCheck.bound = function () {
+      var current = instance.viewModelInstance;
+      return current && current.viewModelName;
+    };
+    twnoCheck.nested = function (path) {
+      var child = instance.viewModelInstance.viewModel(path);
+      return child && { viewModelName: child.viewModelName, properties: child.properties.length };
+    };
+    twnoCheck.replaceNested = function (path, viewModelName) {
+      var other = instance.viewModelByName(viewModelName).instance();
+      return instance.viewModelInstance.replaceViewModel(path, other);
+    };
+    twnoCheck.globals = function () {
+      return instance.globalViewModelNames().map(function (name) {
+        var global = instance.globalViewModelInstance(name);
+        return { name: name, viewModelName: global && global.viewModelName };
+      });
+    };
+    twnoCheck.replaceGlobal = function (name, viewModelName, instanceName) {
+      var viewModel = instance.viewModelByName(viewModelName);
+      var other = instanceName ? viewModel.instanceByName(instanceName) : viewModel.instance();
+      return instance.setGlobalViewModelInstance(name, other);
+    };
+    twnoCheck.references = function (viewModelName) {
+      var created = instance.viewModelByName(viewModelName).instance();
+      created.incrementReferenceCount();
+      created.decrementReferenceCount();
+      created.cleanup();
+      return created.viewModelName;
+    };
+    twnoCheck.reloadWithAutoBind = function (mode) {
+      var machine = ex.params.get("stateMachine") || "State Machine 1";
+      if (mode === "load") {
+        instance.load({ src: ex.file, stateMachine: machine, autoplay: true, autoBind: true });
+      } else {
+        instance.reset({ stateMachine: machine, autoplay: true, autoBind: true });
+      }
+    };
+    twnoCheck.fileApi = function (viewModelName, artboardName) {
+      return new Promise(function (resolve) {
+        var file = new rive.RiveFile({
+          src: ex.file,
+          onLoad: function () {
+            var found = file.viewModelByName(viewModelName);
+            var result = {
+              viewModel: found && found.name,
+              globals: file.globalViewModelNames(),
+              bindable: Boolean(artboardName && file.getBindableArtboard(artboardName)),
+              defaultBindable: Boolean(file.getDefaultBindableArtboard()),
+            };
+            file.cleanup();
+            resolve(result);
+          },
+          onLoadError: ex.fail,
+        });
+        file.init();
+      });
+    };
+  });
+</script>
+</body>
+</html>

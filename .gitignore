@@ -1,0 +1,57 @@
+# Dependencies / envs
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env*
+!.env.example
+
+# Graphify (regenerable via `graphify update .` / `graphify init`)
+graphify-out/*
+!graphify-out/.gitkeep
+
+# Internal state of the crew hooks (regenerated, no value in versioning it)
+crew/CLAUDE_CONTEXT/.task_state.json
+crew/CLAUDE_CONTEXT/crew_lock.json
+
+# Common build outputs
+dist/
+/build/
+.next/
+*.tsbuildinfo
+
+# OS / editors
+.DS_Store
+Thumbs.db
+
+# Claude Code — local/personal state, never shared between machines
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
+# Reference checkouts (read-only, untracked)
+vendor/
+
+# Runtime build outputs (premake / build_rive.sh)
+out/
+# Tools cloned by build_rive.sh (premake-core, premake-ninja…). Do not
+# ignore /runtime/dependencies/: upstream versions files there.
+/runtime/build/dependencies/
+/runtime/tests/dependencies/
+
+# Site assembled by web/deploy/build_site.py
+web/deploy/site/
+.wrangler/
+
+# Parity bench (P4-1): official runtime copied out of vendor/, intermediate renders
+tools/parity/.ref/
+tools/parity/.work/
+
+web/parity/pkg/
+
+tools/parity/sm_trace/out/
+
+.playwright-mcp/

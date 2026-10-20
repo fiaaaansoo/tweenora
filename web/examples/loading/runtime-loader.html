@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>RuntimeLoader and loading errors</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var wasm = ex.params.get("wasm") || "/pkg/rive.wasm";
+  var fallback = ex.params.get("fallback");
+  if (fallback === null) { fallback = "/pkg/rive_fallback.wasm"; }
+
+  rive.RuntimeLoader.enablePerfMarks = ex.params.get("perf") === "1";
+  rive.RuntimeLoader.setWasmUrl(wasm);
+  rive.RuntimeLoader.setWasmFallbackUrl(fallback === "none" ? null : fallback);
+  twnoCheck.wasmUrl = rive.RuntimeLoader.getWasmUrl();
+  twnoCheck.wasmFallbackUrl = rive.RuntimeLoader.getWasmFallbackUrl();
+  document.getElementById("info").textContent =
+    "wasm: " + twnoCheck.wasmUrl + "\nfallback: " + twnoCheck.wasmFallbackUrl;
+
+  function start() {
+    twnoCheck.binaryBytes = rive.RuntimeLoader.getWasmBinary() ? rive.RuntimeLoader.getWasmBinary().byteLength : 0;
+    rive.RuntimeLoader.getInstance(function (runtime) { twnoCheck.callbackRuntime = typeof runtime; });
+    rive.RuntimeLoader.awaitInstance().then(function () { twnoCheck.awaited = true; }, function () { twnoCheck.awaited = false; });
+    var instance = new rive.Rive({
+      src: ex.file || "/assets/two_artboards.twno",
+      canvas: document.getElementById("canvas"),
+      autoplay: true,
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: function (event) {
+        twnoCheck.loadErrorType = event && event.type;
+        ex.fail(event);
+      },
+      onAdvance: ex.countFrames,
+    });
+    instance.on(rive.EventType.LoadError, function () { twnoCheck.loadErrorEvent = true; });
+    twnoCheck.instance = instance;
+  }
+
+  if (ex.params.get("binary") === "1") {
+    fetch(wasm)
+      .then(function (response) { return response.arrayBuffer(); })
+      .then(function (buffer) { rive.RuntimeLoader.setWasmBinary(buffer); start(); })
+      .catch(ex.fail);
+  } else {
+    start();
+  }
+</script>
+</body>
+</html>

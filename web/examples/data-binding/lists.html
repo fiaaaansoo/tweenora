@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>View model lists</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var changes = {};
+
+  ex.start(function () {
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || "State Machine 1",
+      autoplay: true,
+      autoBind: true,
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    function list(path) { return instance.viewModelInstance.list(path); }
+    function labels(path) {
+      var found = [];
+      var target = list(path);
+      for (var index = 0; index < target.length; index += 1) {
+        var item = target.instanceAt(index);
+        var label = item && item.string("label");
+        found.push(label ? label.value : null);
+      }
+      return found;
+    }
+    function item(label) {
+      var created = instance.viewModelByName(ex.params.get("item") || "child").instance();
+      created.string("label").value = label;
+      return created;
+    }
+
+    twnoCheck.instance = instance;
+    twnoCheck.changes = changes;
+    twnoCheck.length = function (path) { return list(path).length; };
+    twnoCheck.labels = labels;
+    twnoCheck.observe = function (path) {
+      changes[path] = changes[path] || 0;
+      list(path).on(function () { changes[path] += 1; });
+    };
+    twnoCheck.add = function (path, label) {
+      var created = item(label);
+      twnoCheck.last = created;
+      list(path).addInstance(created);
+      return labels(path);
+    };
+    twnoCheck.addAt = function (path, label, index) {
+      var added = list(path).addInstanceAt(item(label), index);
+      return { added: added, labels: labels(path) };
+    };
+    twnoCheck.removeAt = function (path, index) {
+      list(path).removeInstanceAt(index);
+      return labels(path);
+    };
+    twnoCheck.removeLast = function (path) {
+      list(path).removeInstance(twnoCheck.last);
+      return labels(path);
+    };
+    twnoCheck.swap = function (path, a, b) {
+      list(path).swap(a, b);
+      return labels(path);
+    };
+    twnoCheck.show = function () {
+      var info = { lis1: labels("lis1"), lis2: labels("lis2") };
+      document.getElementById("info").textContent = JSON.stringify(info, null, 2);
+      return info;
+    };
+  });
+</script>
+</body>
+</html>

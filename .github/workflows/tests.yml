@@ -1,0 +1,65 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-tests:
+    if: ${{ !github.event.repository.private }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install the Python dependencies of the parity tools
+        run: python -m pip install pillow numpy
+      - name: Python tests of the tools
+        shell: bash
+        run: |
+          python -I -m unittest discover -s tools/tests
+          python -I -m unittest discover -s tools/parity/tests
+          python -I -m unittest discover -s web/examples/tests
+          python -I -m unittest discover -s web/deploy/tests
+      - name: Node tests of the web parity
+        run: node --test web/parity/render-compare.test.mjs
+
+  unit-tests:
+    if: ${{ !github.event.repository.private }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the runtime unit tests
+        shell: powershell
+        working-directory: runtime/tests/unit_tests
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.longpaths
+          GIT_CONFIG_VALUE_0: "true"
+          CL: "-MP4"
+          MSYS2_ENV_CONV_EXCL: CL
+        run: |
+          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+          .\test.bat --toolset=msc -m "glsl_mix" *> $env:RUNNER_TEMP\build.log
+      - name: Run the unit test suite
+        shell: powershell
+        working-directory: runtime/tests/unit_tests
+        run: |
+          .\out\debug\unit_tests.exe --% ~"synthesizedFailureType" ~"ore binds a fragment compiled apart from its vertex" ~"ore layouts declare non-filtering samplers for depth-only use" ~[.]
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-build-log
+          path: ${{ runner.temp }}/build.log

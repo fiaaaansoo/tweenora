@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Bound images, fonts and artboards</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+
+  function pngBytes(color) {
+    var source = document.createElement("canvas");
+    source.width = 64;
+    source.height = 64;
+    var context = source.getContext("2d");
+    context.fillStyle = color;
+    context.fillRect(0, 0, 64, 64);
+    return new Promise(function (resolve) {
+      source.toBlob(function (blob) {
+        blob.arrayBuffer().then(function (buffer) { resolve(new Uint8Array(buffer)); });
+      }, "image/png");
+    });
+  }
+
+  ex.start(function () {
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || "State Machine 1",
+      autoplay: true,
+      autoBind: true,
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    function root() { return instance.viewModelInstance; }
+
+    twnoCheck.instance = instance;
+    twnoCheck.setImage = function (path, color) {
+      return pngBytes(color).then(rive.decodeImage).then(function (image) {
+        root().image(path).value = image;
+        image.unref();
+        return true;
+      });
+    };
+    twnoCheck.clearImage = function (path) {
+      root().image(path).value = null;
+      return true;
+    };
+    twnoCheck.setFont = function (path, url) {
+      return ex.fetchBytes(url)
+        .then(rive.decodeFont)
+        .then(function (font) {
+          root().font(path).value = font;
+          font.unref();
+          return true;
+        });
+    };
+    twnoCheck.clearFont = function (path) {
+      root().font(path).value = null;
+      return true;
+    };
+    twnoCheck.setArtboard = function (path, name, bindable) {
+      var artboard = bindable ? instance.getBindableArtboard(name) : instance.getArtboard(name);
+      root().artboard(path).value = artboard;
+      return Boolean(artboard);
+    };
+    twnoCheck.bindableWithViewModel = function (artboardName, path, viewModelName) {
+      var bindable = instance.getBindableArtboard(artboardName);
+      bindable.viewModel = instance.viewModelByName(viewModelName).instance();
+      root().artboard(path).value = bindable;
+      return true;
+    };
+    twnoCheck.destroyBindable = function (artboardName) {
+      instance.getBindableArtboard(artboardName).destroy();
+      return true;
+    };
+    twnoCheck.defaultBindable = function (path) {
+      var artboard = instance.getDefaultBindableArtboard();
+      root().artboard(path).value = artboard;
+      return Boolean(artboard);
+    };
+  });
+</script>
+</body>
+</html>

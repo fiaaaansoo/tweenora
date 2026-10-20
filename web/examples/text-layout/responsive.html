@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Responsive layout</title>
+</head>
+<body>
+<div class="controls">
+  <button id="mobile" type="button">Mobile 360 × 640</button>
+  <button id="tablet" type="button">Tablet 768 × 1024</button>
+  <button id="desktop" type="button">Desktop 1280 × 800</button>
+</div>
+<canvas id="canvas" style="width: 360px; height: 640px"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+
+  ex.start(function () {
+    var canvas = document.getElementById("canvas");
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: canvas,
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || "State Machine 1",
+      autoplay: true,
+      layout: new rive.Layout({
+        fit: rive.Fit.Layout,
+        alignment: rive.Alignment.TopLeft,
+        layoutScaleFactor: Number(ex.params.get("scale") || 1),
+      }),
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+
+    function measure() {
+      var report = {
+        canvas: canvas.width + "x" + canvas.height,
+        artboard: instance.artboardWidth + "x" + instance.artboardHeight,
+        devicePixelRatioUsed: instance.devicePixelRatioUsed,
+        fit: instance.layout.fit,
+        bounds: [instance.layout.minX, instance.layout.minY, instance.layout.maxX, instance.layout.maxY],
+        layoutScaleFactor: instance.layout.layoutScaleFactor,
+      };
+      document.getElementById("info").textContent = JSON.stringify(report, null, 2);
+      return report;
+    }
+    function resize(width, height, ratio) {
+      canvas.style.width = width + "px";
+      canvas.style.height = height + "px";
+      instance.resizeDrawingSurfaceToCanvas(ratio);
+      return measure();
+    }
+
+    twnoCheck.instance = instance;
+    twnoCheck.measure = measure;
+    twnoCheck.resize = resize;
+    twnoCheck.scale = function (factor) {
+      instance.layout = instance.layout.copyWith({ layoutScaleFactor: factor });
+      instance.resizeDrawingSurfaceToCanvas();
+      return measure();
+    };
+    twnoCheck.resizeToCanvas = function () {
+      instance.resizeToCanvas();
+      return measure();
+    };
+    twnoCheck.resetArtboardSize = function () {
+      instance.resetArtboardSize();
+      return measure();
+    };
+    twnoCheck.setArtboardSize = function (width, height) {
+      instance.artboardWidth = width;
+      instance.artboardHeight = height;
+      return measure();
+    };
+    twnoCheck.setBounds = function (minX, minY, maxX, maxY) {
+      instance.layout = instance.layout.copyWith({ minX: minX, minY: minY, maxX: maxX, maxY: maxY });
+      return measure();
+    };
+    twnoCheck.setPixelRatio = function (ratio) {
+      instance.devicePixelRatioUsed = ratio;
+      return measure();
+    };
+    twnoCheck.params = function () {
+      var layout = new rive.Layout({
+        fit: rive.Fit.Contain,
+        alignment: rive.Alignment.BottomRight,
+        layoutScaleFactor: 2,
+        minX: 1,
+        minY: 2,
+        maxX: 300,
+        maxY: 400,
+      });
+      return [layout.fit, layout.alignment, layout.layoutScaleFactor, layout.minX, layout.minY, layout.maxX, layout.maxY];
+    };
+    document.getElementById("mobile").addEventListener("click", function () { resize(360, 640); });
+    document.getElementById("tablet").addEventListener("click", function () { resize(768, 1024); });
+    document.getElementById("desktop").addEventListener("click", function () { resize(1280, 800); });
+  });
+</script>
+</body>
+</html>

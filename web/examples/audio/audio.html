@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Audio</title>
+<script>
+  (function () {
+    var Native = window.AudioContext;
+    var made = [];
+    window.twnoAudioContexts = made;
+    window.AudioContext = class extends Native {
+      constructor(...options) {
+        super(...options);
+        made.push(this);
+      }
+    };
+  })();
+</script>
+</head>
+<body>
+<div class="controls">
+  <button id="gesture" type="button">User gesture</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var assetsSeen = [];
+  var events = [];
+
+  ex.start(function () {
+    var hosted = ex.params.get("hosted");
+    var machine = ex.params.get("stateMachine") || "State Machine 1";
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: machine,
+      autoplay: true,
+      enableRiveAssetCDN: false,
+      assetLoader: function (asset, bytes) {
+        assetsSeen.push({ name: asset.name, isAudio: asset.isAudio, embeddedBytes: bytes.length });
+        if (!asset.isAudio || !hosted || bytes.length > 0) { return false; }
+        ex.fetchBytes(hosted)
+          .then(rive.decodeAudio)
+          .then(function (audio) {
+            twnoCheck.hostedNative = Boolean(audio.nativeAudio);
+            asset.setAudioSource(audio);
+            audio.unref();
+            twnoCheck.hostedApplied = true;
+          })
+          .catch(ex.fail);
+        return true;
+      },
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+    instance.on(rive.EventType.RiveEvent, function (event) {
+      events.push(event.data && event.data.name);
+    });
+
+    function input(name) {
+      return (instance.stateMachineInputs(machine) || []).filter(function (i) {
+        return i.name === name;
+      })[0];
+    }
+
+    twnoCheck.instance = instance;
+    twnoCheck.assetsSeen = assetsSeen;
+    twnoCheck.events = events;
+    twnoCheck.audioStates = function () {
+      return window.twnoAudioContexts.map(function (context) { return context.state; });
+    };
+    twnoCheck.volume = function (value) {
+      if (value !== undefined) { instance.volume = value; }
+      return instance.volume;
+    };
+    twnoCheck.setInput = function (name, value) {
+      var found = input(name);
+      found.value = value;
+      return found.value;
+    };
+    twnoCheck.decode = function (url) {
+      return ex.fetchBytes(url).then(rive.decodeAudio).then(function (audio) {
+        var native = Boolean(audio.nativeAudio);
+        audio.unref();
+        return native;
+      });
+    };
+  });
+</script>
+</body>
+</html>

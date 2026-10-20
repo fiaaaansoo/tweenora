@@ -1,0 +1,543 @@
+dofile('rive_build_config.lua')
+
+-- Including this file automatically enables Rive tools. The other way to
+-- enable them is to pass the --with_rive_tools option to premake.
+_OPTIONS['with_rive_tools'] = ''
+
+-- Several of the scripts below assign RIVE_RUNTIME_DIR and RIVE_PLS_DIR
+-- themselves, so ours would not survive the dofiles. Keep a private copy to
+-- reach them with, and set the shared globals once every dofile has run.
+RIVE_RUNTIME_DOFILE_DIR = path.getabsolute('..')
+
+dofile(RIVE_RUNTIME_DOFILE_DIR .. '/premake5_v2.lua')
+dofile(RIVE_RUNTIME_DOFILE_DIR .. '/cg_renderer/premake5.lua')
+dofile(RIVE_RUNTIME_DOFILE_DIR .. '/dependencies/premake5_libpng_v2.lua')
+dofile(RIVE_RUNTIME_DOFILE_DIR .. '/dependencies/premake5_glfw_v2.lua')
+dofile(RIVE_RUNTIME_DOFILE_DIR .. '/decoders/premake5_v2.lua')
+dofile(RIVE_RUNTIME_DOFILE_DIR .. '/renderer/premake5_pls_renderer.lua')
+
+newoption({ trigger = 'with-skia', description = 'use skia' })
+if _OPTIONS['with-skia'] then
+    dofile(RIVE_RUNTIME_DOFILE_DIR .. '/skia/renderer/premake5_v2.lua')
+end
+
+newoption({
+    trigger = 'with-canvas-2d',
+    description = 'build the Canvas2D renderer from packages/runtime_wasm',
+})
+
+-- The Canvas2D testing window imports canvas_advanced.mjs at runtime rather
+-- than linking it, so it has to sit beside the tool. Building rive_wasm in this
+-- workspace puts it there directly: it links to RIVE_BUILD_OUT, which is the
+-- tools' own target directory.
+if _OPTIONS['with-canvas-2d'] then
+    if rive_target_os ~= 'emscripten' then
+        error('--with-canvas-2d requires --arch=wasm')
+    end
+    dofile(RIVE_RUNTIME_DOFILE_DIR .. '/../runtime_wasm/wasm/premake5.lua')
+end
+
+newoption({ trigger = 'with-svg', description = 'use the SVG renderer' })
+
+RIVE_RUNTIME_DIR = RIVE_RUNTIME_DOFILE_DIR
+RIVE_PLS_DIR = path.getabsolute('../renderer')
+
+newoption({trigger = 'all_tools_as_static', description = 'force all RiveTool projects to be static libs'})
+
+function rive_tools_project(name, project_kind)
+    project(name)
+    if project_kind == 'RiveTool' then
+        kind(
+            _OPTIONS['for_unreal'] and 'StaticLib'
+                or _OPTIONS['all_tools_as_static'] and 'StaticLib'
+                or _OPTIONS['for_android'] and 'SharedLib'
+                or _OPTIONS['os'] == 'ios' and 'StaticLib'
+                or 'ConsoleApp'
+        )
+
+        dependson({
+            'tools_common',
+            'rive_pls_renderer',
+            'rive_cg_renderer',
+            'rive_decoders',
+            'rive',
+            'libpng',
+            'zlib',
+            'libjpeg',
+            'libwebp',
+            'rive_yoga',
+            'rive_harfbuzz',
+            'rive_sheenbidi',
+            'miniaudio',
+        })
+
+        filter({ 'system:windows', 'options:with-asan', 'options:toolset=clang' })
+        do
+            links({
+                'clang_rt.asan_dbg_dynamic-x86_64.lib',
+                'clang_rt.asan_dynamic_runtime_thunk-x86_64.lib',
+            })
+        end
+        filter({})
+    else
+        kind(project_kind)
+    end
+
+    fatalwarnings { "All" }
+
+    -- Solves link order issue on linux
+    filter({ 'system:linux'})
+    do
+        linkgroups("On")
+    end
+    filter({ })
+    
+    defines({
+        'SK_GL',
+        'GL_SILENCE_DEPRECATION', -- For glReadPixels()
+        'YOGA_EXPORT=',
+    })
+
+    includedirs({
+        '.',
+        RIVE_PLS_DIR .. '/include',
+        RIVE_PLS_DIR .. '/path_fiddle',
+        RIVE_PLS_DIR .. '/shader_hotload',
+        RIVE_PLS_DIR .. '/src',
+        RIVE_RUNTIME_DIR .. '/include',
+        RIVE_RUNTIME_DIR .. '/cg_renderer/include',
+        RIVE_RUNTIME_DIR .. '/decoders/include',
+        'unit_tests',
+        '%{cfg.targetdir}/include/libpng',
+    })
+
+    externalincludedirs({
+        'include',
+        RIVE_PLS_DIR .. '/glad',
+        RIVE_PLS_DIR .. '/glad/include',
+        yoga,
+        libpng,
+        zlib,
+        miniaudio,
+    })
+
+    if ndk then
+        externalincludedirs({ ndk .. '/sources' })
+        links({ 'log', 'android' })
+    end
+
+    if _OPTIONS['with_vulkan'] and not _OPTIONS['_console_only_ore_vk'] then
+        -- Skip bootstrap on platforms that supply the Vulkan loader directly.
+        dofile(RIVE_PLS_DIR .. '/rive_vk_bootstrap/bootstrap_project.lua')
+    end
+
+    -- Tools projects compile separately from rive_pls_renderer and need
+    -- their own externalincludedirs for ORE Vulkan headers.
+    if _OPTIONS['with_vulkan'] and _OPTIONS['_console_only_ore_vk'] then
+        externalincludedirs({
+            vulkan_headers .. '/include',
+            vulkan_memory_allocator .. '/include',
+        })
+    end
+
+    if _OPTIONS['scripting_vm'] ~= 'wasm' then
+        filter({ 'options:with_rive_scripting' })
+        do
+            includedirs({
+                luau .. '/VM/include',
+            })
+        end
+
+        -- When scripting is enabled, librive.a contains lua_promise.o and
+        -- lua_image_decode.o which reference luau symbols.
+        filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'options:with_rive_scripting' })
+        do
+            links({ 'luau_vm' })
+        end
+    end
+    if _OPTIONS['scripting_vm'] == 'wasm' or _OPTIONS['scripting_vm'] == 'both'
+    then
+        -- librive.a's WasmScriptingVM needs the WAMR runtime.
+        filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'options:with_rive_scripting' })
+        do
+            links({ 'wamr' })
+        end
+        -- wamr's Windows platform layer reaches past the CRT.
+        filter({ 'system:windows', 'kind:ConsoleApp or SharedLib or WindowedApp', 'options:with_rive_scripting' })
+        do
+            links({ 'ntdll', 'userenv', 'ws2_32', 'bcrypt' })
+        end
+        -- Ladder tests speak the public wamr API directly.
+        filter({ 'options:with_rive_scripting' })
+        do
+            includedirs({ wamr .. '/core/iwasm/include' })
+        end
+        filter({})
+    end
+
+    filter({ 'system:windows or macosx or linux', 'options:not for_unreal'  })
+    do
+        externalincludedirs({
+            glfw .. '/include',
+        })
+    end
+
+    filter('options:with-skia')
+    do
+        includedirs({
+            RIVE_RUNTIME_DIR .. '/skia/renderer/include',
+            RIVE_RUNTIME_DIR .. '/skia/dependencies',
+            RIVE_RUNTIME_DIR .. '/skia/dependencies/skia',
+        })
+        defines({ 'RIVE_SKIA' })
+        libdirs({ RIVE_RUNTIME_DIR .. '/skia/dependencies/skia/out/static' })
+    end
+
+    filter('options:with-svg')
+    do
+        defines({ 'RIVE_SVG' })
+    end
+
+    filter({ 'toolset:not msc' })
+    do
+        buildoptions({ '-Wshorten-64-to-32' })
+    end
+
+    filter({ 'system:windows' })
+    do
+        architecture('x64')
+        defines({
+            '_USE_MATH_DEFINES',
+            '_CRT_SECURE_NO_WARNINGS',
+            '_CRT_NONSTDC_NO_DEPRECATE',
+            '_WINSOCK_DEPRECATED_NO_WARNINGS',
+            'UNICODE',
+        })
+        if rive_target_os == 'windows' and _OPTIONS['for_unreal'] == nil then
+            externalincludedirs({
+                dx12_headers .. '/include/directx',
+            })
+        end
+    end
+
+    filter('system:android')
+    do
+        defines({ 'RIVE_TOOLS_NO_GLFW' })
+    end
+
+    filter('system:ios')
+    do
+        defines({ 'RIVE_TOOLS_NO_GLFW', 'RIVE_TOOLS_NO_GL' })
+    end
+
+    -- Match PLS math options for testing simd.
+    filter({ 'system:not windows', 'options:not no_ffp_contract' })
+    do
+        buildoptions({
+            '-ffp-contract=on',
+            '-fassociative-math',
+            -- Don't warn about simd vectors larger than 128 bits when AVX is not enabled.
+            '-Wno-psabi',
+        })
+    end
+
+    filter({ 'system:windows', 'options:toolset=msc' })
+    do
+        -- MSVC doesn't allow designated initializers on C++17.
+        defines({
+            '_SILENCE_CXX20_IS_POD_DEPRECATION_WARNING',
+            '_SILENCE_ALL_CXX20_DEPRECATION_WARNINGS',
+        })
+        buildoptions({
+            -- "warning C4577: 'noexcept' used with no exception handling mode specified;
+            -- termination on exception is not guaranteed. Specify /EHsc"
+            '/EHsc',
+        })
+    end
+
+    filter('options:with-dawn')
+    do
+        includedirs({
+            RIVE_PLS_DIR .. '/dependencies/dawn/include',
+            RIVE_PLS_DIR .. '/dependencies/dawn/out/release/gen/include',
+        })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp' })
+    do
+        libdirs({ RIVE_RUNTIME_DIR .. '/build/%{cfg.system}/bin/' .. RIVE_BUILD_CONFIG })
+
+        links({
+            'tools_common',
+            'rive_pls_renderer',
+            'rive_cg_renderer',
+            'rive_decoders',
+            'rive',
+            'libpng',
+            'zlib',
+            'libwebp',
+            'rive_yoga',
+            'rive_harfbuzz',
+            'rive_sheenbidi',
+            'miniaudio',
+        })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'options:not no_rive_jpeg' })
+    do
+        links({
+            'libjpeg',
+        })
+    end
+
+    filter({})
+
+    if ndk then
+        relative_ndk = ndk
+        if string.sub(ndk, 1, 1) == '/' then
+            -- An absolute file path wasn't working with premake.
+            local current_path = string.gmatch(path.getabsolute('.'), '([^\\/]+)')
+            for dir in current_path do
+                relative_ndk = '../' .. relative_ndk
+            end
+        end
+        files({
+            relative_ndk .. '/sources/android/native_app_glue/android_native_app_glue.c',
+        })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'system:windows' })
+    do
+        links({
+            'glfw3',
+            'opengl32',
+            'd3d11',
+            'd3d12',
+            'dxguid',
+            'dxgi',
+            'Dbghelp',
+            'd3dcompiler',
+            'ws2_32',
+            'gdi32',
+            'shell32',
+            'advapi32',
+            'user32',
+        })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'system:macosx' })
+    do
+        links({
+            'glfw3',
+            'Metal.framework',
+            'QuartzCore.framework',
+            'Cocoa.framework',
+            'CoreGraphics.framework',
+            'CoreFoundation.framework',
+            'CoreMedia.framework',
+            'CoreServices.framework',
+            'IOKit.framework',
+            'Security.framework',
+            'OpenGL.framework',
+            'bz2',
+            'iconv',
+            'lzma',
+            'z', -- lib av format
+        })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'system:linux' })
+    do
+        links({ 'glfw3', 'm', 'z', 'dl', 'pthread', 'GL' })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'system:android' })
+    do
+        links({ 'EGL', 'GLESv3', 'log' })
+        -- Support 16 KB page sizes
+        -- Necessary for NDK r27, can remove when upgrading to r28+
+            -- See: https://developer.android.com/guide/practices/page-sizes#compile-r27-lower
+        -- See: https://android.googlesource.com/platform/ndk/+/master/docs/BuildSystemMaintainers.md#page-sizes
+        linkoptions({
+            '-Wl,-z,max-page-size=16384',
+            '-Wl,-z,common-page-size=16384',
+        })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'options:with-dawn' })
+    do
+        libdirs({
+            RIVE_PLS_DIR .. '/dependencies/dawn/out/release/obj/src/dawn',
+            RIVE_PLS_DIR .. '/dependencies/dawn/out/release/obj/src/dawn/native',
+            RIVE_PLS_DIR .. '/dependencies/dawn/out/release/obj/src/dawn/platform',
+            RIVE_PLS_DIR .. '/dependencies/dawn/out/release/obj/src/dawn/platform',
+        })
+        links({
+            'winmm',
+            'webgpu_dawn',
+            'dawn_native_static',
+            'dawn_proc_static',
+            'dawn_platform_static',
+        })
+    end
+
+    filter({
+        'kind:ConsoleApp or SharedLib or WindowedApp',
+        'options:with-dawn',
+        'system:windows',
+    })
+    do
+        links({ 'dxguid', 'onecore' })
+    end
+
+    filter({
+        'kind:ConsoleApp or SharedLib or WindowedApp',
+        'options:with-dawn',
+        'system:macosx',
+    })
+    do
+        links({ 'IOSurface.framework' })
+    end
+
+    filter({ 'kind:ConsoleApp or SharedLib or WindowedApp', 'options:with-skia' })
+    do
+        links({ 'skia', 'rive_skia_renderer' })
+    end
+
+    filter({ 'options:for_unreal' })
+    do
+        defines({ 'RIVE_UNREAL', 'RIVE_TOOLS_NO_GLFW', 'RIVE_TOOLS_NO_GL' })
+    end
+
+    filter('system:emscripten')
+    do
+        targetextension('.js')
+        defines({ 'EMSCRIPTEN_HAS_UNBOUND_TYPE_NAMES=0' })
+        linkoptions({
+            '--bind',
+            -- Must be repeated at link time, not just when compiling. emcc
+            -- picks the libembind variant from the link command line.
+            '-fno-rtti',
+            '-sEXPORTED_FUNCTIONS=_main,_rive_print_message_on_server,_malloc,_free',
+            '-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPU32',
+            '-sENVIRONMENT=web',
+            '-sUSE_GLFW=3',
+            '-sMIN_WEBGL_VERSION=2',
+            '-sMAX_WEBGL_VERSION=2',
+            '-sASYNCIFY',
+            '-sASYNCIFY_IMPORTS="[async_sleep, wasi_snapshot_preview1.fd_write]"',
+            '-sASYNCIFY_STACK_SIZE=16384',
+            '-sGL_TESTING',
+            '-sALLOW_MEMORY_GROWTH',
+            '-sINITIAL_HEAP=134217728',
+            '-lwebsocket.js',
+        })
+    end
+
+    filter({
+        'system:emscripten',
+        'options:with-webgpu',
+        'options:not with_wagyu',
+        'options:webgpu-version=1',
+    })
+    do
+        -- webgpu-version=1 keeps the legacy -sUSE_WEBGPU library.
+        linkoptions({ '-sUSE_WEBGPU' })
+    end
+
+    filter({
+        'system:emscripten',
+        'options:with-webgpu',
+        'options:not with_wagyu',
+        'options:webgpu-version=2',
+    })
+    do
+        -- webgpu-version=2 uses Dawn's emdawnwebgpu port (the new "future"
+        -- webgpu.h API) so it runs in a real browser.
+        buildoptions({ '--use-port=emdawnwebgpu' })
+        linkoptions({ '--use-port=emdawnwebgpu' })
+    end
+
+    filter('files:**.html')
+    do
+        buildmessage('Copying %{file.relpath} to %{cfg.targetdir}')
+        buildcommands({ 'cp %{file.relpath} %{cfg.targetdir}/%{file.name}' })
+        buildoutputs({ '%{cfg.targetdir}/%{file.name}' })
+    end
+
+    filter({ 'options:with-canvas-2d' })
+    do
+        defines({ 'RIVE_CANVAS_2D' })
+        dependson({ 'rive_wasm' })
+    end
+
+    filter({})
+
+    if RIVE_WAGYU_PORT then
+        buildoptions({ RIVE_WAGYU_PORT })
+        linkoptions({ RIVE_WAGYU_PORT })
+    end
+end
+
+rive_tools_project('tools_common', 'StaticLib')
+do
+    files({
+        'common/*.cpp',
+        'unit_tests/assets/*.cpp',
+        RIVE_PLS_DIR .. '/path_fiddle/fiddle_context.cpp',
+        RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_gl.cpp',
+        RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_d3d.cpp',
+        RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_d3d12.cpp',
+        RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_vulkan.cpp',
+        RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_dawn.cpp',
+    })
+
+    filter('options:with-svg')
+    do
+        files({
+            RIVE_RUNTIME_DIR .. '/utils/svg_factory.cpp',
+            RIVE_RUNTIME_DIR .. '/utils/svg_renderer.cpp',
+        })
+    end
+
+    filter({'options:for_unreal'})
+    do
+        removefiles({'common/offscreen_render_target_*', 'common/offscreen_rendertarget_*',})
+    end
+
+    filter({ 'options:not no_tools_shader_hotloading' })
+    do
+     files({ RIVE_PLS_DIR .. '/shader_hotload/**.cpp'} )
+    end
+    
+    if rive_target_os == 'windows' and _OPTIONS['for_unreal'] == nil then
+        externalincludedirs({
+            dx12_headers .. '/include/directx',
+        })
+    end
+
+    filter({ 'toolset:not msc' })
+    do
+        buildoptions({ '-Wshorten-64-to-32' })
+    end
+
+    filter('system:macosx or ios')
+    do
+        files({ 'common/*.mm' })
+    end
+
+    filter({'system:macosx', 'options:not for_unreal'})
+    do
+        files({
+            RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_metal.mm',
+            RIVE_PLS_DIR .. '/path_fiddle/fiddle_context_dawn_helper.mm',
+        })
+    end
+
+    filter('system:emscripten')
+    do
+        files({ 'common/rive_wasm_app.cpp' })
+    end
+
+    filter({})
+end

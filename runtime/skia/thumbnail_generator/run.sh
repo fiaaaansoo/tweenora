@@ -1,0 +1,1 @@
+./build/out/release/tweenora_thumbnail_generator

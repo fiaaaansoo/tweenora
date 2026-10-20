@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Rive events</title>
+</head>
+<body>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  rive.Rive.suppressDeprecationWarnings = Object.values(rive.DeprecationKeys);
+  var received = [];
+
+  ex.start(function () {
+    ex.sizeCanvas(document.getElementById("canvas"));
+    var instance = new rive.Rive({
+      src: ex.file,
+      canvas: document.getElementById("canvas"),
+      artboard: ex.params.get("artboard") || undefined,
+      stateMachine: ex.params.get("stateMachine") || undefined,
+      autoplay: true,
+      automaticallyHandleEvents: ex.params.get("handle") === "1",
+      autoBind: ex.params.get("autobind") === "1",
+      onLoad: function () {
+        instance.resizeDrawingSurfaceToCanvas();
+        ex.setState("loaded", "loaded");
+      },
+      onLoadError: ex.fail,
+      onAdvance: ex.countFrames,
+    });
+    function onRiveEvent(event) {
+      var payload = event.data;
+      received.push({
+        name: payload && payload.name,
+        type: payload && payload.type,
+        general: payload && payload.type === rive.RiveEventType.General,
+        openUrl: payload && payload.type === rive.RiveEventType.OpenUrl,
+        properties: payload && payload.properties,
+      });
+      document.getElementById("info").textContent = JSON.stringify(received.slice(-5), null, 2);
+    }
+    instance.on(rive.EventType.RiveEvent, onRiveEvent);
+
+    twnoCheck.instance = instance;
+    twnoCheck.received = received;
+    twnoCheck.riveEventTypes = Object.values(rive.RiveEventType);
+    twnoCheck.stopListening = function () {
+      instance.removeAllRiveEventListeners(rive.EventType.RiveEvent);
+    };
+  });
+</script>
+</body>
+</html>

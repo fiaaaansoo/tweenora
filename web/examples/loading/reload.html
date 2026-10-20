@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/common.css">
+<title>Reloading with load()</title>
+</head>
+<body>
+<div class="controls">
+  <button id="by-src" type="button">load({ src })</button>
+  <button id="by-buffer" type="button">load({ buffer })</button>
+  <button id="by-file" type="button">load({ riveFile })</button>
+</div>
+<canvas id="canvas" class="fill"></canvas>
+<pre id="info"></pre>
+<script src="/pkg/rive.js"></script>
+<script src="/common.js"></script>
+<script>
+  var ex = twnoExample;
+  var first = ex.file || "/assets/two_artboards.twno";
+  var second = ex.params.get("second") || "/assets/multiple_state_machines.twno";
+  ex.configureRuntime();
+  var loads = [];
+  var pendingLabel = "initial";
+
+  var instance = new rive.Rive({
+    src: first,
+    canvas: document.getElementById("canvas"),
+    autoplay: true,
+    onLoad: function () {
+      instance.resizeDrawingSurfaceToCanvas();
+      loads.push({ by: pendingLabel, artboard: instance.activeArtboard });
+      twnoCheck.loads = loads;
+      document.getElementById("info").textContent = JSON.stringify(loads, null, 2);
+      ex.setState("loaded", "loaded via " + pendingLabel + " (" + instance.activeArtboard + ")");
+    },
+    onLoadError: ex.fail,
+    onAdvance: ex.countFrames,
+  });
+  twnoCheck.instance = instance;
+
+  twnoCheck.loadBySrc = function () {
+    pendingLabel = "src";
+    instance.load({ src: second, autoplay: true });
+  };
+  twnoCheck.loadByBuffer = function () {
+    pendingLabel = "buffer";
+    return fetch(first)
+      .then(function (response) { return response.arrayBuffer(); })
+      .then(function (buffer) { instance.load({ buffer: buffer, artboard: "One", autoplay: true }); });
+  };
+  twnoCheck.loadByFile = function () {
+    pendingLabel = "riveFile";
+    var file = new rive.RiveFile({
+      src: second,
+      onLoad: function () { instance.load({ riveFile: file, autoplay: true }); },
+      onLoadError: ex.fail,
+    });
+    file.init();
+  };
+  document.getElementById("by-src").addEventListener("click", twnoCheck.loadBySrc);
+  document.getElementById("by-buffer").addEventListener("click", twnoCheck.loadByBuffer);
+  document.getElementById("by-file").addEventListener("click", twnoCheck.loadByFile);
+</script>
+</body>
+</html>

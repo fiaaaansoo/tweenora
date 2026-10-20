@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Web render parity</title>
+<style>
+html, body { margin: 0; background: #111; color: #ddd; font: 14px/1.4 system-ui, sans-serif; }
+main { padding: 16px; max-width: 1700px; margin: 0 auto; }
+#status { margin: 0 0 12px; }
+#view { display: none; max-width: 100%; height: auto; background: #fff; }
+#view.on { display: block; }
+</style>
+</head>
+<body>
+<main>
+<p id="status">loading</p>
+<canvas id="view"></canvas>
+</main>
+<script src="pkg/rive.js"></script>
+<script type="module">
+import { classify, compareRgba, decide, exactRule, explainDifferences, summarize } from "./render-compare.mjs";
+
+const SIZE = 1600;
+const FRAME = 1 / 60;
+const statusLine = document.getElementById("status");
+let runtimePromise = null;
+
+function say(text) {
+  statusLine.textContent = text;
+  document.title = "Web render parity: " + text;
+}
+
+function runtime() {
+  if (!runtimePromise) {
+    rive.RuntimeLoader.setWasmUrl("pkg/rive.wasm");
+    rive.RuntimeLoader.setWasmFallbackUrl("pkg/rive_fallback.wasm");
+    runtimePromise = rive.RuntimeLoader.awaitInstance();
+  }
+  return runtimePromise;
+}
+
+const imageTracker = { pending: 0, started: 0 };
+
+function trackImages() {
+  if (window.Image.tracked) {
+    return;
+  }
+  const NativeImage = window.Image;
+  const Tracked = function () {
+    const image = new NativeImage();
+    imageTracker.pending += 1;
+    imageTracker.started += 1;
+    const done = () => {
+      setTimeout(() => {
+        imageTracker.pending -= 1;
+      }, 0);
+    };
+    image.addEventListener("load", done, { once: true });
+    image.addEventListener("error", done, { once: true });
+    return image;
+  };
+  Tracked.tracked = true;
+  window.Image = Tracked;
+}
+
+async function settleImages() {
+  const deadline = performance.now() + 10000;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  while (imageTracker.pending > 0 && performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  if (imageTracker.pending > 0) {
+    throw new Error("image decoding did not finish");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function fetchBytes(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${url}: HTTP ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function whiteCanvas() {
+  const canvas = document.createElement("canvas");
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, SIZE, SIZE);
+  return { canvas, context };
+}
+
+function bindViewModel(file, artboard, machine, mode) {
+  if (mode === "none") {
+    return false;
+  }
+  try {
+    const model = file.defaultArtboardViewModel(artboard);
+    if (!model) {
+      return false;
+    }
+    const instance = mode === "authored" ? model.defaultInstance() : model.instance();
+    if (!instance) {
+      return false;
+    }
+    artboard.bindViewModelInstance(instance);
+    if (machine) {
+      machine.bindViewModelInstance(instance);
+    }
+    return true;
+  } catch (failure) {
+    return false;
+  }
+}
+
+async function renderWeb(entry) {
+  trackImages();
+  const rc = await runtime();
+  const bytes = await fetchBytes(`/src/${entry.path}`);
+  const file = await rc.load(bytes);
+  await settleImages();
+  const artboard = entry.artboard ? file.artboardByName(entry.artboard) : file.defaultArtboard();
+  if (!artboard) {
+    throw new Error("artboard not found");
+  }
+  if (typeof window.parityOptions.frameOrigin === "boolean") {
+    artboard.frameOrigin = window.parityOptions.frameOrigin;
+  }
+  let machine = null;
+  if (entry.stateMachine) {
+    machine = new rc.StateMachineInstance(artboard.stateMachineByName(entry.stateMachine), artboard);
+  }
+  const bound = bindViewModel(file, artboard, machine, window.parityOptions.bind || "blank");
+  await settleImages();
+  const advance = (seconds) => (machine ? machine.advanceAndApply(seconds) : artboard.advance(seconds));
+  if (entry.advance <= 0) {
+    advance(0);
+  } else {
+    for (let i = 0; i < entry.advance; i += 1) {
+      advance(FRAME);
+    }
+  }
+  await settleImages();
+  const surface = document.createElement("canvas");
+  surface.width = SIZE;
+  surface.height = SIZE;
+  const renderer = rc.makeRenderer(surface);
+  renderer.clear();
+  renderer.save();
+  renderer.align(
+    rc.Fit.cover,
+    rc.Alignment.center,
+    { minX: 0, minY: 0, maxX: SIZE, maxY: SIZE },
+    artboard.bounds,
+  );
+  artboard.draw(renderer);
+  renderer.restore();
+  renderer.flush();
+  const target = whiteCanvas();
+  target.context.drawImage(surface, 0, 0);
+  const pixels = target.context.getImageData(0, 0, SIZE, SIZE).data;
+  if (machine) {
+    machine.delete();
+  }
+  artboard.delete();
+  file.delete();
+  renderer.delete();
+  return { pixels, bound };
+}
+
+const REFERENCES = ["golden", "golden-d3d"];
+const TIER_RANK = { identical: 0, rounding: 1, edge: 2, structural: 3 };
+
+function goldenBase(reference) {
+  return `/goldens/${reference || window.parityOptions.golden || REFERENCES[0]}`;
+}
+
+async function loadGolden(id, reference) {
+  const response = await fetch(`${goldenBase(reference)}/${id}.png`);
+  if (!response.ok) {
+    throw new Error(`golden ${id}: HTTP ${response.status}`);
+  }
+  const bitmap = await createImageBitmap(await response.blob(), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  if (bitmap.width !== SIZE || bitmap.height !== SIZE) {
+    throw new Error(`golden ${id}: ${bitmap.width}x${bitmap.height}`);
+  }
+  const target = whiteCanvas();
+  target.context.clearRect(0, 0, SIZE, SIZE);
+  target.context.drawImage(bitmap, 0, 0);
+  return target.context.getImageData(0, 0, SIZE, SIZE).data;
+}
+
+async function runOne(entry, rule, references) {
+  const result = { id: entry.id, path: entry.path, advance: entry.advance, references: {} };
+  try {
+    const web = await renderWeb(entry);
+    result.viewModelBound = web.bound;
+    for (const reference of references) {
+      const golden = await loadGolden(entry.id, reference);
+      const metrics = compareRgba(web.pixels, golden, { width: SIZE });
+      const explained = explainDifferences(web.pixels, golden, { width: SIZE });
+      result.references[reference] = { ...metrics, explained, tier: classify(metrics, explained) };
+      delete result.references[reference].histogram;
+    }
+    const first = result.references[references[0]];
+    Object.assign(result, { differingPixels: first.differingPixels, maxChannelDiff: first.maxChannelDiff, fraction: first.fraction }, decide(first, rule));
+    const best = references.reduce((a, b) => (TIER_RANK[result.references[b].tier] < TIER_RANK[result.references[a].tier] ? b : a));
+    result.tier = result.references[best].tier;
+    result.bestReference = best;
+  } catch (failure) {
+    result.status = "error";
+    result.detail = String(failure && failure.message ? failure.message : failure);
+  }
+  return result;
+}
+
+async function run(options) {
+  const rule = options.rule || exactRule();
+  const references = options.references || REFERENCES;
+  const results = [];
+  for (const entry of options.entries) {
+    say(`${results.length + 1}/${options.entries.length} ${entry.id}`);
+    results.push(await runOne(entry, rule, references));
+  }
+  const summary = summarize(results);
+  say(`done: ${summary.total} renders, ${summary.failures.length} out of tolerance`);
+  const count = (pick) => {
+    const tiers = {};
+    for (const result of results) {
+      const tier = pick(result);
+      if (tier) {
+        tiers[tier] = (tiers[tier] || 0) + 1;
+      }
+    }
+    return tiers;
+  };
+  const perReference = {};
+  for (const reference of references) {
+    perReference[reference] = count((result) => result.references[reference] && result.references[reference].tier);
+  }
+  return {
+    rule,
+    references,
+    summary: { total: summary.total, counts: summary.counts, ok: summary.ok },
+    tiers: count((result) => result.tier),
+    perReference,
+    results,
+  };
+}
+
+async function view(entry) {
+  const web = await renderWeb(entry);
+  const golden = await loadGolden(entry.id);
+  const canvas = document.getElementById("view");
+  canvas.width = SIZE * 3;
+  canvas.height = SIZE;
+  const context = canvas.getContext("2d");
+  const output = context.createImageData(SIZE, SIZE);
+  const diff = context.createImageData(SIZE, SIZE);
+  for (let i = 0; i < web.pixels.length; i += 4) {
+    const d = Math.max(
+      Math.abs(web.pixels[i] - golden[i]),
+      Math.abs(web.pixels[i + 1] - golden[i + 1]),
+      Math.abs(web.pixels[i + 2] - golden[i + 2]),
+      Math.abs(web.pixels[i + 3] - golden[i + 3]),
+    );
+    const level = d === 0 ? 255 : Math.max(0, 160 - d * 4);
+    diff.data[i] = d === 0 ? level : 255;
+    diff.data[i + 1] = d === 0 ? level : level;
+    diff.data[i + 2] = d === 0 ? level : level;
+    diff.data[i + 3] = 255;
+  }
+  output.data.set(web.pixels);
+  context.putImageData(output, 0, 0);
+  context.putImageData(new ImageData(new Uint8ClampedArray(golden), SIZE, SIZE), SIZE, 0);
+  context.putImageData(diff, SIZE * 2, 0);
+  canvas.classList.add("on");
+  say(`view ${entry.id}: web, native, diff`);
+}
+
+async function crop(entry, box, zoom = 1) {
+  const web = await renderWeb(entry);
+  const golden = await loadGolden(entry.id);
+  const [x0, y0, x1, y1] = box;
+  const w = x1 - x0;
+  const h = y1 - y0;
+  const canvas = document.getElementById("view");
+  canvas.width = (w * 3 + 20) * zoom;
+  canvas.height = h * zoom;
+  const context = canvas.getContext("2d");
+  context.imageSmoothingEnabled = false;
+  context.fillStyle = "#f0f";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const panel = (fill) => {
+    const data = new ImageData(w, h);
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const i = ((y + y0) * SIZE + x + x0) * 4;
+        const j = (y * w + x) * 4;
+        fill(data.data, j, i);
+        data.data[j + 3] = 255;
+      }
+    }
+    const tmp = document.createElement("canvas");
+    tmp.width = w;
+    tmp.height = h;
+    tmp.getContext("2d").putImageData(data, 0, 0);
+    return tmp;
+  };
+  const copy = (source) => (out, j, i) => {
+    out[j] = source[i];
+    out[j + 1] = source[i + 1];
+    out[j + 2] = source[i + 2];
+  };
+  const difference = (out, j, i) => {
+    const d = Math.max(
+      Math.abs(web.pixels[i] - golden[i]),
+      Math.abs(web.pixels[i + 1] - golden[i + 1]),
+      Math.abs(web.pixels[i + 2] - golden[i + 2]),
+    );
+    out[j] = 255;
+    out[j + 1] = d === 0 ? 255 : Math.max(0, 200 - d * 3);
+    out[j + 2] = out[j + 1];
+  };
+  context.drawImage(panel(copy(web.pixels)), 0, 0, w * zoom, h * zoom);
+  context.drawImage(panel(copy(golden)), (w + 10) * zoom, 0, w * zoom, h * zoom);
+  context.drawImage(panel(difference), (2 * w + 20) * zoom, 0, w * zoom, h * zoom);
+  canvas.classList.add("on");
+  canvas.style.maxWidth = "none";
+  canvas.style.width = `${canvas.width}px`;
+  say(`crop ${entry.id}: web, native, diff`);
+}
+
+async function locate(entry, threshold = 1, grid = 16) {
+  const web = await renderWeb(entry);
+  const golden = await loadGolden(entry.id);
+  const cell = SIZE / grid;
+  const cells = Array.from({ length: grid }, () => new Array(grid).fill(0));
+  let minX = SIZE, minY = SIZE, maxX = -1, maxY = -1, count = 0;
+  for (let y = 0; y < SIZE; y += 1) {
+    for (let x = 0; x < SIZE; x += 1) {
+      const i = (y * SIZE + x) * 4;
+      const d = Math.max(
+        Math.abs(web.pixels[i] - golden[i]),
+        Math.abs(web.pixels[i + 1] - golden[i + 1]),
+        Math.abs(web.pixels[i + 2] - golden[i + 2]),
+        Math.abs(web.pixels[i + 3] - golden[i + 3]),
+      );
+      if (d >= threshold) {
+        count += 1;
+        cells[Math.floor(y / cell)][Math.floor(x / cell)] += 1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  return { id: entry.id, count, box: [minX, minY, maxX, maxY], rows: cells.map((row) => row.join(" ")) };
+}
+
+window.parityOptions = {};
+window.parity = { run, view, runtime, locate, crop, renderWeb, loadGolden };
+say("ready");
+</script>
+</body>
+</html>

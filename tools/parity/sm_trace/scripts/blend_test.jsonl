@@ -1,0 +1,13 @@
+{"op": "advance", "dt": 0.016}
+{"op": "number", "name": "Number 1", "value": 0}
+{"op": "advance", "dt": 0.016}
+{"op": "number", "name": "Number 2", "value": 0}
+{"op": "advance", "dt": 0.1}
+{"op": "number", "name": "Number 1", "value": 50}
+{"op": "advance", "dt": 0.1}
+{"op": "number", "name": "Number 1", "value": 100}
+{"op": "number", "name": "Number 2", "value": 100}
+{"op": "advance", "dt": 0.25}
+{"op": "advance", "dt": 0.5}
+{"op": "number", "name": "Number 1", "value": -10}
+{"op": "advance", "dt": 0.25}

@@ -1,0 +1,136 @@
+import "regenerator-runtime";
+import { Rive, Fit, Alignment, Layout, EventType } from "@rive-app/canvas";
+
+const AvatarAnimation = new URL("./look.riv", import.meta.url);
+const TapeMeshAnimation = new URL("./tape.riv", import.meta.url);
+const BirdAnimation = new URL("./birb.riv", import.meta.url);
+const TruckAnimation = new URL("./truck.riv", import.meta.url);
+const SwitchAnimation = new URL("./switch_event_example.riv", import.meta.url);
+const NestedDefaultAnimation = new URL("./nested_default.riv", import.meta.url);
+const JigSaw = new URL("./jigsaw.riv", import.meta.url);
+const StringRive = new URL("./string.riv", import.meta.url);
+const RatingAnimation = new URL("./rating_animation.riv", import.meta.url);
+const TextAnimation = new URL("./text_test_2.riv", import.meta.url);
+const FocusAnimation = new URL("./focus.riv", import.meta.url);
+const ScrollVertical = new URL("./layout_scroll_vertical.riv", import.meta.url);
+const ScrollHorizontal = new URL(
+  "./layout_scroll_horizontal.riv",
+  import.meta.url,
+);
+const ScrollNested = new URL("./scroll_nested.riv", import.meta.url);
+const ScrollTall = new URL("./scroll_tall.riv", import.meta.url);
+
+const RIVE_EXAMPLES = {
+  0: {
+    riveFile: RatingAnimation,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  1: {
+    riveFile: SwitchAnimation,
+    hasStateMachine: true,
+    stateMachine: "Main State Machine",
+  },
+  2: {
+    riveFile: AvatarAnimation,
+    animation: "idle",
+  },
+  3: {
+    riveFile: BirdAnimation,
+    animation: "idle",
+  },
+  4: {
+    riveFile: TruckAnimation,
+    hasStateMachine: true,
+    stateMachine: "drive",
+  },
+  5: {
+    riveFile: TapeMeshAnimation,
+    animation: "Animation 1",
+  },
+  6: {
+    riveFile: NestedDefaultAnimation,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  7: {
+    riveFile: JigSaw,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  8: {
+    riveFile: StringRive,
+    hasStateMachine: true,
+    stateMachine: "String",
+  },
+  9: {
+    riveFile: TextAnimation,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  10: {
+    riveFile: FocusAnimation,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+    artboard: "EdgeStop",
+  },
+  // Mouse wheel / trackpad scrolling
+  11: {
+    riveFile: ScrollVertical,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  12: {
+    riveFile: ScrollHorizontal,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  13: {
+    riveFile: ScrollNested,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+  // 40 rows in a 500px viewport, with two nested horizontal strips
+  14: {
+    riveFile: ScrollTall,
+    hasStateMachine: true,
+    stateMachine: "State Machine 1",
+  },
+};
+
+async function loadFile(num) {
+  const riveEx = RIVE_EXAMPLES[num % Object.keys(RIVE_EXAMPLES).length];
+  const bytes = await (await fetch(new Request(riveEx.riveFile))).arrayBuffer();
+  return { bytes, riveEx };
+}
+
+async function main(num) {
+  const { bytes, riveEx } = await loadFile(num);
+  const body = document.querySelector("body");
+  const el = document.createElement("canvas");
+  el.id = `canvas${num}`;
+  el.width = "400";
+  el.height = "400";
+  body.appendChild(el);
+
+  const r = new Rive({
+    buffer: bytes,
+    autoplay: true,
+    canvas: el,
+    layout: new Layout({
+      fit: Fit.Contain,
+      alignment: Alignment.Center,
+    }),
+    autoBind: true,
+    ...(riveEx.artboard && { artboard: riveEx.artboard }),
+    ...(riveEx.hasStateMachine && { stateMachines: riveEx.stateMachine }),
+  });
+  function onRiveEventReceived(riveEvent) {
+    console.log("Rive Event Fired", riveEvent);
+  }
+  r.on(EventType.RiveEvent, onRiveEventReceived);
+}
+
+for (let i = 0; i < Object.keys(RIVE_EXAMPLES).length; i++) {
+  main(i);
+}
