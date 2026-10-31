@@ -1,7 +1,7 @@
 # PRODUCT.md — Tweenora
 
 Product summary. The detailed plan (decisions, phases, tasks) is in
-[`PLAN.md`](PLAN.md).
+`PLAN.md`, which is kept in the working repository.
 
 ## Vision
 
@@ -31,9 +31,8 @@ Nothing has shipped yet. What exists today:
 
 ## Out of scope (explicitly)
 
-- Copying or decompiling the code of the Rive editor.
-- Copying the look of Rive's interface pixel for pixel: same features, our own
-  look.
-- Reusing Rive's content (docs, fonts, animations, images), its name or its
-  logo.
+- Copying or decompiling the code of any third-party editor.
+- Copying the look of another product's interface: our own look.
+- Reusing third-party content (docs, fonts, animations, images), names or
+  logos.
 - Domains, trademark filing and legal advice: deferred to the cloud launch.

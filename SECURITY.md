@@ -20,11 +20,11 @@ page, import into the editor). Rules:
   access to files or the network.
 - The runtime has been neither audited nor fuzzed: only open files you trust.
 
-## Rive's proprietary content
+## Third-party proprietary content
 
-- Never any decompiled code from the Rive editor in the repository.
+- Never any decompiled code from a third-party editor in the repository.
 - Never any third-party assets (documentation, fonts, animations, images), nor
-  screenshots of Rive's editor.
+  screenshots of a third-party editor.
 - `vendor/` contains read-only, untracked MIT reference checkouts.
 
 ## Reporting a vulnerability

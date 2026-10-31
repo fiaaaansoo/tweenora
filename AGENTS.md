@@ -1,7 +1,7 @@
 # AGENTS.md — Tweenora
 
 Invariants guide + repo map for any agent (Claude Code or other) working on
-this project. The full context is in [`PLAN.md`](PLAN.md).
+this project. The full context is in `PLAN.md`, which is kept in the working repository.
 
 ## Stack
 
@@ -216,13 +216,13 @@ bash web/build_webgl2_package.sh --no-wasm  # bundle and pack only
   `50000–59999` range (D8), never in Rive's range.
 - **`vendor/` read-only**: nothing is modified there, work happens in the
   fork.
-- **Forbidden**: decompiled code from the Rive editor, Rive assets, a Rive name
-  or logo visible to the end user (except legal notices).
+- **Forbidden**: decompiled code from a third-party editor, third-party assets,
+  and a third-party name or logo visible to the end user (except legal notices).
 
 ## Secrets and boundaries
 
 See [`SECURITY.md`](SECURITY.md): no secrets in the repository, `.twno`/`.riv`
-files treated as untrusted, no proprietary Rive content.
+files treated as untrusted, no proprietary third-party content.
 
 ## Documentation routing
 
