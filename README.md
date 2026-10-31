@@ -62,7 +62,7 @@ Then drop a `.twno` or `.riv` file on the page, or pick one of the examples.
 
 ## Status and limits
 
-- Web is the only platform today. An editor, other runtime platforms and a cloud offering are planned, with no date; `editor/`, `platforms/` and `server/` contain no code yet. Phases: [`PLAN.md`](PLAN.md).
+- Web is the only platform today. An editor, other runtime platforms and a cloud offering are planned, with no date; `editor/`, `platforms/` and `server/` contain no code yet.
 - Rendering and state machine behavior are measured against the upstream runtime on the 475 upstream test files kept in the repository, with documented limits (one browser, one GPU, Windows only, no scripting): see [`docs/baseline/`](docs/baseline/). Nothing is promised beyond those measurements. If you find a difference, open an issue.
 - No editor yet: files come from other tools, from conversion with `twno_convert`, or from the generator `twno_gen`.
 
