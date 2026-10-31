@@ -5,7 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        This issue is public: do not attach an ID document or private contact details. Tweenora replies within 7 days and removes the file
+        This issue is public: do not attach an ID document or private contact details. To keep your details private, use the private report
+        form instead (https://github.com/fiaaaansoo/tweenora/security/advisories/new, title starting with "Takedown:"). Tweenora replies within 7 days and removes the file
         from the repository if the request is well founded. The full procedure is in `NOTICE`, section "Test files".
   - type: input
     id: chemin

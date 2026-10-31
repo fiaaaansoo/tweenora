@@ -3,3 +3,6 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/fiaaaansoo/tweenora/security/advisories/new
     about: Use private reporting, not a public issue.
+  - name: Ask for a file takedown privately
+    url: https://github.com/fiaaaansoo/tweenora/security/advisories/new
+    about: Start the title with "Takedown:" and give the path of the file and what establishes your rights.

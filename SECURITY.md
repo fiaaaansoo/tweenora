@@ -30,7 +30,9 @@ page, import into the editor). Rules:
 ## Reporting a vulnerability
 
 Do not open a public issue: use GitHub's private reporting (the "Security" tab,
-"Report a vulnerability"). No audit or fuzzing of the runtime has been done to
+"Report a vulnerability"). Requests to remove a file you hold rights in go
+through the same form, with a title that starts with "Takedown:" (procedure in
+`NOTICE`). No audit or fuzzing of the runtime has been done to
 date: only open files you trust.
 
 ## Auth boundaries

@@ -30,5 +30,14 @@ Merges from Rive (`upstream`) go in a dedicated commit:
   P4-3; until then, run them locally).
 - `fiaaaansoo/tweenora` repository: no mandatory human review as long as the
   project has a single maintainer. A contribution is offered under the license
-  of the folder it modifies (see `LICENSE`). Code of conduct:
+  of the folder it modifies (see `NOTICE`). Code of conduct:
   `CODE_OF_CONDUCT.md`.
+
+## Sign-off
+
+A pull request that changes `editor/` or `server/` needs a `Signed-off-by:` line
+on every commit: `git commit -s` adds it. The line says you wrote the change, or
+have the right to submit it, under the license of the folder
+([Developer Certificate of Origin](https://developercertificate.org)). The `dco`
+workflow checks each commit; `tools/dco_check.py <base> <head>` runs the same
+check locally. Other folders need no sign-off.

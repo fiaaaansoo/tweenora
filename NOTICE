@@ -2,6 +2,16 @@ Tweenora
 
 Tweenora is based on rive-runtime and rive-wasm, © Rive, MIT.
 
+License of this repository
+
+Everything published here is under the MIT license, except the third-party files described under "Test files".
+
+- `runtime/`: Copyright (c) 2020 Rive. Text in `runtime/LICENSE`.
+- `web/rive-wasm/`: Copyright (c) 2020-2021 Rive. Text in `web/rive-wasm/LICENSE`.
+- Everything else (tools, scripts, examples, documentation, demo page, and the changes Tweenora made in the folders above): Copyright (c) 2026 fiaaaansoo. Text in `LICENSE`.
+
+The license of the editor and the server is not decided, and they are not published. When they are, each folder will carry its own `LICENSE`, and contributions to them will need a sign-off (see `CONTRIBUTING.md`).
+
 Runtime upstream: https://github.com/rive-app/rive-runtime
 Base commit: daf55385b71fb861b2a1ae2930ae4492832d5db5
 Upstream license and copyright: `runtime/LICENSE` (MIT, Copyright (c) 2020 Rive),
@@ -188,7 +198,10 @@ They are provided as is, without warranty, and are not works of Tweenora.
 For those the demo uses, the known provenance is in
 `web/examples/ASSETS_PROVENANCE.md`.
 
-If you hold rights in any of these files and want it removed,
-open an issue at https://github.com/fiaaaansoo/tweenora/issues stating
-the path of the file and what establishes your rights. Tweenora replies within 7 days
-and removes the file from the repository if the request is well founded.
+If you hold rights in any of these files and want it removed, send a private
+report at https://github.com/fiaaaansoo/tweenora/security/advisories/new
+("Report a vulnerability"), with a title that starts with "Takedown:". Give the
+path of the file and what establishes your rights. If you prefer, open a public
+issue with the "File takedown request" template, and do not attach identity
+documents or private contact details there. Tweenora replies within 7 days and
+removes the file from the repository if the request is well founded.

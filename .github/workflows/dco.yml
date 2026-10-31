@@ -1,0 +1,22 @@
+name: dco
+
+on:
+  pull_request:
+    paths:
+      - "editor/**"
+      - "server/**"
+
+jobs:
+  signoff:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check that every commit of the pull request carries a Signed-off-by line
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/dco_check.py "$BASE_SHA" "$HEAD_SHA"

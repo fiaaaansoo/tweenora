@@ -1,24 +1,6 @@
-Tweenora
-
-The components of this repository are licensed per subfolder.
-
-- `runtime/`: MIT license, Copyright (c) 2020 Rive. See `runtime/LICENSE`.
-- `web/rive-wasm/`: MIT license, Copyright (c) 2020-2021 Rive. See
-  `web/rive-wasm/LICENSE`.
-
-Everything else in the code and documents written for Tweenora (tools, scripts,
-examples, documentation, demo page, and the changes Tweenora made in the
-folders above): MIT license, Copyright (c) 2026 fiaaaansoo, text below. Rive's
-copyrights on the original code are kept as they are.
-
-The license of the editor and the server is not yet decided: they are not
-published.
-
-Attribution notices and pointers to the licenses of third-party dependencies
-are in `NOTICE`.
-
 MIT License
 
+Copyright (c) 2020 Rive
 Copyright (c) 2026 fiaaaansoo
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
